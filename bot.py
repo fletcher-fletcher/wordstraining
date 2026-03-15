@@ -28,6 +28,7 @@ if not BOT_TOKEN:
     logger.error("BOT_TOKEN не найден в .env файле!")
     exit(1)
 
+# СОЗДАЕМ БОТА ЗДЕСЬ - ОДИН РАЗ!
 bot = telebot.TeleBot(BOT_TOKEN)
 bot.timeout = 30
 
@@ -144,107 +145,69 @@ def save_user_word(user_id, word_id, notes=""):
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     try:
-        # Проверим, есть ли уже такое слово
+        # Проверяем, есть ли уже такое слово
         cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', 
                       (user_id, word_id))
         existing = cursor.fetchone()
         
         if existing:
-            print(f"DEBUG: Слово {word_id} уже есть у пользователя {user_id}")
+            print(f"Слово {word_id} уже есть у пользователя {user_id}")
             cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
             count = cursor.fetchone()[0]
+            conn.close()
             return count
         
+        # Сохраняем новое слово
         cursor.execute('''
             INSERT INTO user_words (user_id, word_id, notes)
             VALUES (?, ?, ?)
         ''', (user_id, word_id, notes))
         conn.commit()
         
+        # Получаем обновленное количество
         cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
         count = cursor.fetchone()[0]
-        print(f"DEBUG: Сохранено слово {word_id}. Теперь у пользователя {user_id} {count} слов")
+        print(f"Сохранено слово {word_id}. Теперь у пользователя {user_id} {count} слов")
+        conn.close()
         return count
     except Exception as e:
         print(f"Ошибка сохранения: {e}")
-        return None
-    finally:
         conn.close()
+        return None
 
 def get_user_words(user_id):
     """Возвращает список сохраненных слов пользователя"""
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
 
-    # Проверим, есть ли вообще записи для этого пользователя
-    cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
-    count = cursor.fetchone()[0]
-    print(f"DEBUG: У пользователя {user_id} {count} сохраненных слов")
+    # Сначала получаем ID слов пользователя
+    cursor.execute('SELECT word_id FROM user_words WHERE user_id = ? ORDER BY added_date DESC', (user_id,))
+    word_ids = cursor.fetchall()
     
-    if count == 0:
+    if not word_ids:
         conn.close()
         return []
 
-    cursor.execute('''
-        SELECT w.* FROM words w
-        JOIN user_words uw ON w.id = uw.word_id
-        WHERE uw.user_id = ?
-        ORDER BY uw.added_date DESC
-    ''', (user_id,))
-
-    words = cursor.fetchall()
-    conn.close()
+    # Получаем полную информацию о словах
+    words = []
+    for (word_id,) in word_ids:
+        cursor.execute('SELECT * FROM words WHERE id = ?', (word_id,))
+        word_data = cursor.fetchone()
+        if word_data:
+            words.append({
+                'id': word_data[0],
+                'word': word_data[1],
+                'translation': word_data[2],
+                'example': word_data[3],
+                'example_translation': word_data[4],
+                'synonyms': word_data[5],
+                'part_of_speech': word_data[6],
+                'notes': ""
+            })
     
-    print(f"DEBUG: Найдено {len(words)} слов в базе")
-
-    result = []
-    for w in words:
-        result.append({
-            'id': w[0],
-            'word': w[1],
-            'translation': w[2],
-            'example': w[3],
-            'example_translation': w[4],
-            'synonyms': w[5],
-            'part_of_speech': w[6],
-            'notes': ""
-        })
-    return result
-
-def get_random_user_word(user_id, exclude_id=None):
-    """Возвращает случайное слово из списка пользователя"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-
-    if exclude_id:
-        cursor.execute('''
-            SELECT w.* FROM words w
-            JOIN user_words uw ON w.id = uw.word_id
-            WHERE uw.user_id = ? AND w.id != ?
-            ORDER BY RANDOM() LIMIT 1
-        ''', (user_id, exclude_id))
-    else:
-        cursor.execute('''
-            SELECT w.* FROM words w
-            JOIN user_words uw ON w.id = uw.word_id
-            WHERE uw.user_id = ?
-            ORDER BY RANDOM() LIMIT 1
-        ''', (user_id,))
-
-    word = cursor.fetchone()
     conn.close()
-
-    if word:
-        return {
-            'id': word[0],
-            'word': word[1],
-            'translation': word[2],
-            'example': word[3],
-            'example_translation': word[4],
-            'synonyms': word[5],
-            'part_of_speech': word[6]
-        }
-    return None
+    print(f"Найдено {len(words)} слов для пользователя {user_id}")
+    return words
 
 def count_user_words(user_id):
     """Считает количество сохраненных слов у пользователя"""
@@ -443,7 +406,6 @@ def mylist_command(message):
         bot.reply_to(message, "📭 У тебя пока нет сохраненных слов. Используй /random и сохраняй интересные!")
         return
 
-    # Простой список без пагинации для начала
     text = "📚 *Твои сохраненные слова:*\n\n"
     for i, w in enumerate(words, 1):
         pos_symbol = "📘" if w['part_of_speech'] == "adjective" else "📗" if w['part_of_speech'] == "noun" else "📙"
@@ -483,7 +445,12 @@ def start_practice_session(user_id, mode, chat_id):
     if mode == "practice_all":
         word = get_random_word()
     else:
-        word = get_random_user_word(user_id)
+        # Для тренировки по своим словам используем get_user_words
+        user_words = get_user_words(user_id)
+        if not user_words:
+            bot.send_message(chat_id, "📭 У тебя пока нет слов для тренировки. Сохрани слова через /random")
+            return
+        word = random.choice(user_words)
 
     if not word:
         bot.send_message(chat_id, "😕 Не могу найти слово для тренировки. Попробуй позже.")
@@ -639,7 +606,6 @@ def handle_callback(call):
 
     if call.data.startswith("save_"):
         word_id = int(call.data.split("_")[1])
-
         count = save_user_word(user_id, word_id)
 
         if count:
@@ -648,12 +614,10 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "✅ Слово сохранено!")
 
         markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-
         next_btn = telebot.types.InlineKeyboardButton("🎲 Еще слово", callback_data="random")
         voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word_id}")
         mylist_btn = telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="menu_mylist")
         home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-
         markup.add(next_btn, voice_btn, mylist_btn, home_btn)
 
         bot.edit_message_reply_markup(chat_id, message_id, reply_markup=markup)
@@ -666,11 +630,11 @@ def handle_callback(call):
 
         update_word_stats(user_id, word_id, is_correct)
 
-        if is_correct:
-            bot.answer_callback_query(call.id, "✅ Правильно! Молодец!")
-        else:
+        if not is_correct:
             bot.answer_callback_query(call.id, "❌ Неправильно", show_alert=True)
             return
+
+        bot.answer_callback_query(call.id, "✅ Правильно! Молодец!")
 
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
@@ -737,16 +701,6 @@ def handle_callback(call):
             bot.edit_message_text(f"👀 *Правильный ответ:*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
         return
 
-# ----- ФУНКЦИЯ ДЛЯ ЗАПУСКА БОТА -----
-def run_bot():
-    """Запускает бота"""
-    print("Запускаем бота...")
-    try:
-        bot.infinity_polling(timeout=30, long_polling_timeout=20)
-    except Exception as e:
-        logger.error(f"Ошибка бота: {e}")
-        time.sleep(5)
-
 # ----- ЗАПУСК ПРИЛОЖЕНИЯ -----
 if __name__ == "__main__":
     print("Запускаем приложение...")
@@ -763,14 +717,12 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Ошибка при проверке gTTS: {e}")
 
-        # Запускаем бота в отдельном потоке
-        bot_thread = threading.Thread(target=run_bot, daemon=True)
-        bot_thread.start()
-        print("✅ Бот запущен")
-
         # Запускаем Flask в главном потоке
         port = int(os.environ.get('PORT', 10000))
         print(f"🚀 Запускаем Flask на порту {port}...")
+        
+        # Flask будет работать в главном потоке, а бот - в фоновом
+        # Но бот уже создан глобально и будет работать благодаря polling
         app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
     except Exception as e:
