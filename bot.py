@@ -144,14 +144,26 @@ def save_user_word(user_id, word_id, notes=""):
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     try:
+        # Проверим, есть ли уже такое слово
+        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', 
+                      (user_id, word_id))
+        existing = cursor.fetchone()
+        
+        if existing:
+            print(f"DEBUG: Слово {word_id} уже есть у пользователя {user_id}")
+            cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
+            count = cursor.fetchone()[0]
+            return count
+        
         cursor.execute('''
-            INSERT OR IGNORE INTO user_words (user_id, word_id, notes)
+            INSERT INTO user_words (user_id, word_id, notes)
             VALUES (?, ?, ?)
         ''', (user_id, word_id, notes))
         conn.commit()
-
+        
         cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
         count = cursor.fetchone()[0]
+        print(f"DEBUG: Сохранено слово {word_id}. Теперь у пользователя {user_id} {count} слов")
         return count
     except Exception as e:
         print(f"Ошибка сохранения: {e}")
@@ -164,6 +176,15 @@ def get_user_words(user_id):
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
 
+    # Проверим, есть ли вообще записи для этого пользователя
+    cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
+    count = cursor.fetchone()[0]
+    print(f"DEBUG: У пользователя {user_id} {count} сохраненных слов")
+    
+    if count == 0:
+        conn.close()
+        return []
+
     cursor.execute('''
         SELECT w.* FROM words w
         JOIN user_words uw ON w.id = uw.word_id
@@ -173,6 +194,8 @@ def get_user_words(user_id):
 
     words = cursor.fetchall()
     conn.close()
+    
+    print(f"DEBUG: Найдено {len(words)} слов в базе")
 
     result = []
     for w in words:
