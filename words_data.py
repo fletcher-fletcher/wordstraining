@@ -1405,5 +1405,407 @@ words_database = [
         "example_translation": "Нестабильная ситуация.",
         "synonyms": "unstable, unpredictable, explosive",
         "part_of_speech": "adjective"
+    },
+    
+        # ----- НОВЫЕ СЛОВА (C2 УРОВЕНЬ) -----
+    {
+        "word": "Abstemious",
+        "translation": "воздержанный, умеренный (особенно в еде и питье)",
+        "example": "He is known for his abstemious habits, drinking only water and eating very simple meals.",
+        "example_translation": "Он известен своими воздержанными привычками, пьет только воду и ест очень простую пищу.",
+        "synonyms": "temperate, moderate, self-denying, ascetic, Spartan",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Bilious",
+        "translation": "желчный, раздражительный",
+        "example": "His bilious commentary on the state of modern art alienated many of his colleagues.",
+        "example_translation": "Его желчные комментарии о состоянии современного искусства оттолкнули многих его коллег.",
+        "synonyms": "irritable, peevish, ill-tempered, splenetic, choleric",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Churlish",
+        "translation": "грубый, невежливый, мужиковатый",
+        "example": "It would be churlish to refuse such a generous offer.",
+        "example_translation": "Было бы невежливо отказываться от такого щедрого предложения.",
+        "synonyms": "rude, ill-mannered, discourteous, uncivil, boorish",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Craven",
+        "translation": "трусливый, малодушный",
+        "example": "His craven surrender to the bullies surprised no one.",
+        "example_translation": "Его трусливая капитуляция перед хулиганами никого не удивила.",
+        "synonyms": "cowardly, faint-hearted, pusillanimous, timid, fearful",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Disingenuous",
+        "translation": "неискренний, лукавый",
+        "example": "It was disingenuous of her to claim she had no idea about the surprise party.",
+        "example_translation": "С ее стороны было неискренне утверждать, что она ничего не знала о вечеринке-сюрпризе.",
+        "synonyms": "insincere, dishonest, deceitful, duplicitous, hypocritical",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Fatuous",
+        "translation": "глупый, нелепый, бессмысленный",
+        "example": "He ignored her question and just gave a fatuous grin.",
+        "example_translation": "Он проигнорировал ее вопрос и просто глупо ухмыльнулся.",
+        "synonyms": "silly, foolish, stupid, inane, nonsensical",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Fracas",
+        "translation": "шумная ссора, потасовка",
+        "example": "A fracas broke out in the stands after the referee's controversial decision.",
+        "example_translation": "После спорного решения судьи на трибунах вспыхнула потасовка.",
+        "synonyms": "brawl, altercation, scuffle, melee, fight",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Importunate",
+        "translation": "назойливый, навязчивый",
+        "example": "The importunate beggar followed them down the entire street.",
+        "example_translation": "Назойливый попрошайка преследовал их всю улицу.",
+        "synonyms": "persistent, insistent, pressing, urgent, demanding",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Iniquitous",
+        "translation": "несправедливый, беззаконный, преступный",
+        "example": "They protested against the iniquitous tax laws that favored the wealthy.",
+        "example_translation": "Они протестовали против несправедливых налоговых законов, которые благоприятствовали богатым.",
+        "synonyms": "wicked, sinful, immoral, unjust, nefarious",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Insouciant",
+        "translation": "беззаботный, беспечный",
+        "example": "He faced the financial crisis with an insouciant shrug, as if it didn't matter.",
+        "example_translation": "Он встретил финансовый кризис с беспечным пожатием плеч, как будто это не имело значения.",
+        "synonyms": "nonchalant, unconcerned, carefree, blithe, casual",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Meretricious",
+        "translation": "показной, мишурный, вульгарно-кричащий",
+        "example": "The meretricious glamour of the casino quickly lost its appeal.",
+        "example_translation": "Показной гламур казино быстро потерял свою привлекательность.",
+        "synonyms": "tawdry, gaudy, flashy, garish, showy",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Otiose",
+        "translation": "бесполезный, излишний",
+        "example": "All these precautions proved otiose as the storm passed us by.",
+        "example_translation": "Все эти меры предосторожности оказались излишними, так как шторм прошел мимо нас.",
+        "synonyms": "unnecessary, superfluous, pointless, redundant, useless",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Puerile",
+        "translation": "ребяческий, незрелый",
+        "example": "His puerile jokes were not appreciated at the serious business meeting.",
+        "example_translation": "Его ребяческие шутки не оценили на серьезной деловой встрече.",
+        "synonyms": "childish, immature, juvenile, infantile, silly",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Pusillanimous",
+        "translation": "малодушный, трусливый",
+        "example": "The leader's pusillanimous response to the threat eroded his followers' confidence.",
+        "example_translation": "Малодушная реакция лидера на угрозу подорвала доверие его последователей.",
+        "synonyms": "cowardly, timid, fearful, faint-hearted, craven",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Recondite",
+        "translation": "малопонятный, неясный (для неспециалистов)",
+        "example": "The professor's lecture on medieval theology was so recondite that most students were lost.",
+        "example_translation": "Лекция профессора о средневековой теологии была настолько трудной для понимания, что большинство студентов ничего не поняли.",
+        "synonyms": "obscure, abstruse, esoteric, arcane, profound",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Refractory",
+        "translation": "упрямый, строптивый; трудноизлечимый",
+        "example": "Treating this refractory disease requires a completely new approach.",
+        "example_translation": "Лечение этой трудноизлечимой болезни требует совершенно нового подхода.",
+        "synonyms": "stubborn, obstinate, intractable, unruly, unmanageable",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Risible",
+        "translation": "смехотворный, вызывающий смех",
+        "example": "The amount of money they offered for the masterpiece was risible.",
+        "example_translation": "Сумма денег, которую они предложили за шедевр, была смехотворной.",
+        "synonyms": "laughable, ridiculous, absurd, ludicrous, comical",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Sardonic",
+        "translation": "сардонический, язвительно-насмешливый",
+        "example": "His sardonic smile suggested he found the whole situation amusing in a bitter way.",
+        "example_translation": "Его сардоническая улыбка говорила о том, что он находил всю ситуацию горько-забавной.",
+        "synonyms": "mocking, satirical, sarcastic, ironic, cynical",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Truculent",
+        "translation": "агрессивный, воинственный, резкий",
+        "example": "His truculent attitude made any peaceful discussion impossible.",
+        "example_translation": "Его агрессивное отношение делало любую мирную дискуссию невозможной.",
+        "synonyms": "aggressive, hostile, belligerent, pugnacious, combative",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Vexatious",
+        "translation": "досадный, вызывающий раздражение",
+        "example": "The constant delays were highly vexatious for the passengers.",
+        "example_translation": "Постоянные задержки были крайне досадны для пассажиров.",
+        "synonyms": "annoying, irritating, troublesome, bothersome, aggravating",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Aplomb",
+        "translation": "самообладание, уверенность",
+        "example": "She handled the difficult interview with remarkable aplomb.",
+        "example_translation": "Она провела сложное собеседование с замечательным самообладанием.",
+        "synonyms": "composure, self-confidence, poise, assurance, equanimity",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Complaisant",
+        "translation": "любезный, услужливый, покладистый",
+        "example": "The complaisant waiter fulfilled our every request with a smile.",
+        "example_translation": "Услужливый официант с улыбкой выполнял каждую нашу просьбу.",
+        "synonyms": "obliging, accommodating, agreeable, gracious, courteous",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Edifying",
+        "translation": "назидательный, поучительный (в хорошем смысле)",
+        "example": "The documentary was an edifying experience, teaching us about the resilience of nature.",
+        "example_translation": "Этот документальный фильм был поучительным опытом, показавшим нам стойкость природы.",
+        "synonyms": "instructive, educational, enlightening, informative, uplifting",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Equanimity",
+        "translation": "невозмутимость, душевное равновесие",
+        "example": "He accepted both praise and criticism with complete equanimity.",
+        "example_translation": "Он принимал и похвалу, и критику с полным душевным равновесием.",
+        "synonyms": "composure, calmness, serenity, poise, self-possession",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Eschew",
+        "translation": "избегать, сторониться",
+        "example": "As a health enthusiast, he eschews all processed foods and sugary drinks.",
+        "example_translation": "Как сторонник здорового образа жизни, он избегает всех обработанных продуктов и сладких напитков.",
+        "synonyms": "avoid, shun, abstain from, refrain from, forgo",
+        "part_of_speech": "verb"
+    },
+    {
+        "word": "Exculpate",
+        "translation": "оправдывать, снимать обвинение",
+        "example": "The new evidence served to exculpate the defendant completely.",
+        "example_translation": "Новые доказательства послужили полному оправданию подсудимого.",
+        "synonyms": "acquit, exonerate, vindicate, absolve, clear",
+        "part_of_speech": "verb"
+    },
+    {
+        "word": "Exigency",
+        "translation": "острая необходимость, крайняя нужда",
+        "example": "Due to the exigency of the situation, we had to make a decision on the spot.",
+        "example_translation": "Ввиду крайней необходимости нам пришлось принять решение на месте.",
+        "synonyms": "urgency, necessity, need, crisis, emergency",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Facile",
+        "translation": "поверхностный, легковесный; достигаемый слишком легко",
+        "example": "His explanation was too facile to account for the complexity of the problem.",
+        "example_translation": "Его объяснение было слишком поверхностным, чтобы объяснить сложность проблемы.",
+        "synonyms": "simplistic, superficial, shallow, glib, oversimplified",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Fortitude",
+        "translation": "душевная сила, стойкость",
+        "example": "She showed incredible fortitude throughout her long illness.",
+        "example_translation": "Она проявила невероятную стойкость на протяжении всей своей долгой болезни.",
+        "synonyms": "courage, bravery, resilience, endurance, strength",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Imperturbable",
+        "translation": "невозмутимый, хладнокровный",
+        "example": "The veteran pilot remained imperturbable even during the emergency landing.",
+        "example_translation": "Ветеран-пилот оставался невозмутимым даже во время аварийной посадки.",
+        "synonyms": "calm, composed, unflappable, self-possessed, unruffled",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Judicious",
+        "translation": "благоразумный, рассудительный",
+        "example": "A judicious choice of words can prevent many misunderstandings.",
+        "example_translation": "Благоразумный выбор слов может предотвратить многие недоразумения.",
+        "synonyms": "wise, prudent, sensible, astute, shrewd",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Perspicuity",
+        "translation": "ясность, понятность (изложения)",
+        "example": "The perspicuity of her argument made it easy for the jury to understand.",
+        "example_translation": "Ясность ее аргументов облегчила присяжным понимание.",
+        "synonyms": "clarity, lucidity, clearness, intelligibility, transparency",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Redolent",
+        "translation": "благоухающий; напоминающий",
+        "example": "The air was redolent with the scent of pine needles and damp earth.",
+        "example_translation": "Воздух был напоен ароматом сосновых игл и влажной земли.",
+        "synonyms": "fragrant, aromatic, perfumed, sweet-smelling, evocative",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Salubrious",
+        "translation": "полезный для здоровья, целебный",
+        "example": "They moved to the mountains seeking a more salubrious climate.",
+        "example_translation": "Они переехали в горы в поисках более здорового климата.",
+        "synonyms": "healthy, healthful, wholesome, beneficial, invigorating",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Salutary",
+        "translation": "полезный, благотворный (часто о неприятном опыте)",
+        "example": "The accident was a salutary reminder of the dangers of climbing without proper gear.",
+        "example_translation": "Этот несчастный случай был полезным напоминанием об опасности восхождения без надлежащего снаряжения.",
+        "synonyms": "beneficial, advantageous, helpful, valuable, useful",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Sangfroid",
+        "translation": "хладнокровие, невозмутимость",
+        "example": "The hostage negotiator maintained his sangfroid throughout the tense standoff.",
+        "example_translation": "Переговорщик сохранял хладнокровие на протяжении всего напряженного противостояния.",
+        "synonyms": "composure, calmness, poise, equanimity, self-possession",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Sapient",
+        "translation": "мудрый, глубокомысленный",
+        "example": "The old sage offered sapient advice to the young king.",
+        "example_translation": "Старый мудрец дал молодому королю мудрый совет.",
+        "synonyms": "wise, sage, discerning, insightful, perceptive",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Unimpeachable",
+        "translation": "безупречный, не вызывающий сомнений",
+        "example": "The evidence came from an unimpeachable source.",
+        "example_translation": "Улики поступили из безупречного источника.",
+        "synonyms": "irreproachable, blameless, faultless, impeccable, unquestionable",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Venerable",
+        "translation": "почтенный, маститый (о человеке или учреждении)",
+        "example": "He is a venerable journalist who has covered wars and revolutions for decades.",
+        "example_translation": "Он почтенный журналист, который десятилетиями освещал войны и революции.",
+        "synonyms": "respected, esteemed, revered, honored, august",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Verisimilitude",
+        "translation": "правдоподобие",
+        "example": "The film's special effects gave it an astonishing degree of verisimilitude.",
+        "example_translation": "Спецэффекты фильма придали ему поразительную степень правдоподобия.",
+        "synonyms": "realism, authenticity, credibility, plausibility, believability",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Anodyne",
+        "translation": "безобидный, не вызывающий возражений; скучный",
+        "example": "The politician gave an anodyne speech that avoided all controversial topics.",
+        "example_translation": "Политик произнес безобидную речь, в которой избегал всех спорных тем.",
+        "synonyms": "innocuous, harmless, bland, inoffensive, unobjectionable",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Antediluvian",
+        "translation": "допотопный, устаревший",
+        "example": "His antediluvian views on education have no place in modern schools.",
+        "example_translation": "Его допотопные взгляды на образование не имеют места в современных школах.",
+        "synonyms": "archaic, ancient, outdated, antiquated, prehistoric",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Apocryphal",
+        "translation": "апокрифический, сомнительный, вымышленный",
+        "example": "The story about George Washington and the cherry tree is almost certainly apocryphal.",
+        "example_translation": "История о Джордже Вашингтоне и вишневом дереве почти наверняка апокрифична.",
+        "synonyms": "fictitious, mythical, legendary, dubious, questionable",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Apotheosis",
+        "translation": "обожествление, идеальный пример, вершина",
+        "example": "Many consider his Ninth Symphony the apotheosis of classical music.",
+        "example_translation": "Многие считают его Девятую симфонию вершиной классической музыки.",
+        "synonyms": "epitome, quintessence, embodiment, ideal, paragon",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Augur",
+        "translation": "предвещать, служить знаком",
+        "example": "The dark clouds do not augur well for our picnic today.",
+        "example_translation": "Темные тучи не предвещают ничего хорошего для нашего сегодняшнего пикника.",
+        "synonyms": "presage, portend, foreshadow, bode, herald",
+        "part_of_speech": "verb"
+    },
+    {
+        "word": "Beatific",
+        "translation": "блаженный, ангельский",
+        "example": "A beatific smile spread across her face as she listened to the music.",
+        "example_translation": "Блаженная улыбка расплылась по ее лицу, когда она слушала музыку.",
+        "synonyms": "blissful, joyful, ecstatic, rapturous, serene",
+        "part_of_speech": "adjective"
+    },
+    {
+        "word": "Belie",
+        "translation": "противоречить, давать ложное представление",
+        "example": "His calm exterior belied his inner turmoil.",
+        "example_translation": "Его спокойная внешность противоречила его внутреннему смятению.",
+        "synonyms": "contradict, disprove, refute, negate, gainsay",
+        "part_of_speech": "verb"
+    },
+    {
+        "word": "Capitulate",
+        "translation": "капитулировать, сдаться",
+        "example": "After weeks of negotiations, they finally capitulated to all our demands.",
+        "example_translation": "После недель переговоров они наконец капитулировали перед всеми нашими требованиями.",
+        "synonyms": "surrender, yield, submit, give in, concede",
+        "part_of_speech": "verb"
+    },
+    {
+        "word": "Chicanery",
+        "translation": "крючкотворство, жульничество, уловки",
+        "example": "The deal was secured through a series of legal chicaneries.",
+        "example_translation": "Сделка была обеспечена с помощью серии юридических уловок.",
+        "synonyms": "trickery, deception, deceit, fraud, subterfuge",
+        "part_of_speech": "noun"
+    },
+    {
+        "word": "Coalesce",
+        "translation": "объединяться, сливаться",
+        "example": "The various rebel groups coalesced into a single fighting force.",
+        "example_translation": "Различные группы повстанцев объединились в единую боевую силу.",
+        "synonyms": "merge, unite, fuse, combine, consolidate",
+        "part_of_speech": "verb"
     }
 ]
