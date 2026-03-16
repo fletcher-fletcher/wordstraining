@@ -41,46 +41,19 @@ processed_callbacks = {}
 # Блокировка для gTTS
 tts_lock = Lock()
 
-# ----- ФУНКЦИЯ ДЛЯ ОПРЕДЕЛЕНИЯ РЕАЛЬНОГО ID ПОЛЬЗОВАТЕЛЯ -----
-def get_real_user_id(message_or_call):
+# ----- ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ID ПОЛЬЗОВАТЕЛЯ -----
+def get_user_id(obj):
     """
-    Возвращает реальный ID пользователя.
-    Если у пользователя есть слова в базе — используем тот ID, под которым они сохранены.
-    Если нет — используем ID из Telegram.
+    УНИВЕРСАЛЬНОЕ получение ID пользователя.
+    Работает и с Message, и с CallbackQuery.
     """
-    # Получаем telegram_id из сообщения или callback
-    if hasattr(message_or_call, 'from_user'):
-        telegram_id = message_or_call.from_user.id
-    else:
-        telegram_id = message_or_call.message.from_user.id
-    
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    
-    # Проверяем, есть ли у этого пользователя слова в базе
-    cursor.execute('SELECT DISTINCT user_id FROM user_words WHERE user_id = ?', (telegram_id,))
-    existing = cursor.fetchone()
-    
-    if existing:
-        # Если слова есть под Telegram ID — используем его
-        real_id = telegram_id
-        conn.close()
-        return real_id
-    
-    # Если нет слов под Telegram ID, проверяем, есть ли вообще какие-то пользователи в базе
-    cursor.execute('SELECT DISTINCT user_id FROM user_words LIMIT 1')
-    first_user = cursor.fetchone()
-    
-    if first_user:
-        # Если в базе уже есть какой-то пользователь — используем его ID
-        # (предполагаем, что это текущий пользователь)
-        real_id = first_user[0]
-        conn.close()
-        return real_id
-    
-    # Если база пустая — используем Telegram ID
-    conn.close()
-    return telegram_id
+    if hasattr(obj, 'from_user') and obj.from_user:
+        return obj.from_user.id
+    elif hasattr(obj, 'message') and obj.message and obj.message.from_user:
+        if hasattr(obj, 'from_user') and obj.from_user:
+            return obj.from_user.id
+    logger.warning(f"Не удалось определить ID пользователя из объекта: {type(obj)}")
+    return None
 
 # ----- ИНИЦИАЛИЗАЦИЯ FLASK (ДЛЯ RENDER) -----
 app = Flask(__name__)
@@ -188,7 +161,6 @@ def save_user_word(user_id, word_id, notes=""):
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     try:
-        # Проверяем, есть ли уже такое слово
         cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', 
                       (user_id, word_id))
         existing = cursor.fetchone()
@@ -199,14 +171,18 @@ def save_user_word(user_id, word_id, notes=""):
             conn.close()
             return count
         
-        # Сохраняем новое слово
         cursor.execute('''
             INSERT INTO user_words (user_id, word_id, notes)
             VALUES (?, ?, ?)
         ''', (user_id, word_id, notes))
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO word_stats (user_id, word_id, correct, wrong, last_review)
+            VALUES (?, ?, 0, 0, CURRENT_TIMESTAMP)
+        ''', (user_id, word_id))
+        
         conn.commit()
         
-        # Получаем обновленное количество
         cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
         count = cursor.fetchone()[0]
         conn.close()
@@ -221,7 +197,6 @@ def get_user_words(user_id):
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
 
-    # Получаем ID слов пользователя
     cursor.execute('SELECT word_id FROM user_words WHERE user_id = ? ORDER BY added_date DESC', (user_id,))
     word_ids = cursor.fetchall()
     
@@ -229,7 +204,6 @@ def get_user_words(user_id):
         conn.close()
         return []
 
-    # Получаем полную информацию о словах
     words = []
     for (word_id,) in word_ids:
         cursor.execute('SELECT * FROM words WHERE id = ?', (word_id,))
@@ -260,16 +234,16 @@ def count_user_words(user_id):
 
 def update_word_stats(user_id, word_id, correct):
     """Обновляет статистику по слову"""
+    print(f"📊 update_word_stats: user_id={user_id}, word_id={word_id}, correct={correct}")
+    
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     
-    # Проверяем, есть ли уже запись
     cursor.execute('SELECT * FROM word_stats WHERE user_id = ? AND word_id = ?', 
                   (user_id, word_id))
     existing = cursor.fetchone()
     
     if existing:
-        # Обновляем существующую запись
         if correct:
             cursor.execute('''
                 UPDATE word_stats 
@@ -283,7 +257,6 @@ def update_word_stats(user_id, word_id, correct):
                 WHERE user_id = ? AND word_id = ?
             ''', (user_id, word_id))
     else:
-        # Создаем новую запись
         if correct:
             cursor.execute('''
                 INSERT INTO word_stats (user_id, word_id, correct, wrong, last_review)
@@ -297,6 +270,7 @@ def update_word_stats(user_id, word_id, correct):
     
     conn.commit()
     conn.close()
+    print(f"   Статистика обновлена")
 
 def get_word_stats(user_id, word_id):
     """Возвращает статистику по конкретному слову"""
@@ -316,7 +290,6 @@ def get_total_stats(user_id):
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     
-    # Получаем сумму правильных и неправильных ответов
     cursor.execute('''
         SELECT 
             COALESCE(SUM(correct), 0) as total_correct,
@@ -328,9 +301,14 @@ def get_total_stats(user_id):
     result = cursor.fetchone()
     conn.close()
     
+    correct = int(result[0]) if result and result[0] is not None else 0
+    wrong = int(result[1]) if result and result[1] is not None else 0
+    
+    print(f"📈 get_total_stats для user_id={user_id}: correct={correct}, wrong={wrong}")
+    
     return {
-        'correct': result[0],
-        'wrong': result[1]
+        'correct': correct,
+        'wrong': wrong
     }
 
 # ----- ОЗВУЧКА ЧЕРЕЗ GTTS -----
@@ -378,23 +356,62 @@ def format_word_card(word, show_stats=True, user_id=None):
 
     return card
 
-def get_main_menu_keyboard():
-    """Создает клавиатуру главного меню"""
+# ----- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ КЛАВИАТУР -----
+def get_unified_keyboard(word_id=None, mode="random", is_saved=False):
+    """
+    Создает унифицированную клавиатуру для всех случаев.
+    
+    Параметры:
+    - word_id: ID слова (для кнопок сохранения/озвучки)
+    - mode: "random" | "practice" | "search"
+    - is_saved: True если слово уже сохранено
+    """
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    
+    if word_id and not is_saved:
+        buttons.append(telebot.types.InlineKeyboardButton("📥 Сохранить", callback_data=f"save_{word_id}"))
+    elif word_id and is_saved:
+        buttons.append(telebot.types.InlineKeyboardButton("✅ В списке", callback_data="noop"))
+    
+    if word_id:
+        buttons.append(telebot.types.InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_{word_id}"))
+    
+    if mode == "random":
+        buttons.append(telebot.types.InlineKeyboardButton("🎲 Еще слово", callback_data="random"))
+    elif mode == "practice":
+        buttons.append(telebot.types.InlineKeyboardButton("🎯 Следующее", callback_data="continue_practice"))
+    
+    buttons.append(telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="show_mylist"))
+    buttons.append(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+    
+    for i in range(0, len(buttons), 2):
+        if i + 1 < len(buttons):
+            markup.add(buttons[i], buttons[i+1])
+        else:
+            markup.add(buttons[i])
+    
+    return markup
 
-    btn1 = telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="menu_random")
-    btn2 = telebot.types.InlineKeyboardButton("🎯 Тренировка", callback_data="menu_practice")
-    btn3 = telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="show_mylist")
-    btn4 = telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="menu_stats")
-    btn5 = telebot.types.InlineKeyboardButton("❓ Помощь", callback_data="menu_help")
-
-    markup.add(btn1, btn2, btn3, btn4, btn5)
+def get_main_menu_keyboard():
+    """Создает клавиатуру главного меню (без кнопки Помощь)"""
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="menu_random"),
+        telebot.types.InlineKeyboardButton("🎯 Тренировка", callback_data="menu_practice"),
+        telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="show_mylist"),
+        telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="menu_stats")
+    )
     return markup
 
 # ----- ОБРАБОТЧИКИ КОМАНД -----
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    """Приветственное сообщение с меню и поиском"""
+    """Приветственное сообщение"""
+    user_id = get_user_id(message)
+    if user_id:
+        user_states[user_id] = {}
+    
     welcome_text = """
 👋 *Привет! Я бот для изучения умных английских слов.*
 
@@ -418,29 +435,15 @@ def show_main_menu(chat_id, text="🏠 *Главное меню*"):
     markup = get_main_menu_keyboard()
     bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
 
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    help_text = """
-❓ *Помощь по командам*
-
-🏠 *Главное меню* — все основные функции
-
-🎲 *Случайное слово* — получить случайное слово с карточкой
-🎯 *Тренировка* — проверить свои знания
-📚 *Мои слова* — список сохраненных слов
-📊 *Статистика* — твой прогресс
-
-🔊 *Озвучка* — в карточке слова есть кнопка для прослушивания
-
-Просто напиши любое слово — я найду его в словаре!
-    """
-    bot.reply_to(message, help_text, parse_mode='Markdown')
-
 @bot.message_handler(commands=['stats'])
 def stats_command(message):
-    real_id = get_real_user_id(message)
-    saved_count = count_user_words(real_id)
-    stats = get_total_stats(real_id)
+    user_id = get_user_id(message)
+    if not user_id:
+        bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
+        return
+        
+    saved_count = count_user_words(user_id)
+    stats = get_total_stats(user_id)
     
     total_correct = stats['correct']
     total_wrong = stats['wrong']
@@ -456,31 +459,35 @@ def stats_command(message):
         stats_text += f"🎯 Точность: *{accuracy:.1f}%*\n"
 
     markup = telebot.types.InlineKeyboardMarkup()
-    home_btn = telebot.types.InlineKeyboardButton("🏠 Главное меню", callback_data="go_home")
-    markup.add(home_btn)
+    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
 
     bot.send_message(message.chat.id, stats_text, parse_mode='Markdown', reply_markup=markup)
 
 @bot.message_handler(commands=['random'])
 def random_word_command(message):
-    user_id = get_real_user_id(message)
+    user_id = get_user_id(message)
+    if not user_id:
+        bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
+        return
+        
     user_states[user_id] = {"mode": "random"}
     send_random_word(message.chat.id, user_id)
 
 def send_random_word(chat_id, user_id):
     word = get_random_word()
     if word:
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word['id']))
+        is_saved = cursor.fetchone() is not None
+        conn.close()
+        
         card = format_word_card(word, user_id=user_id)
-
-        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-        save_btn = telebot.types.InlineKeyboardButton("📥 Сохранить", callback_data=f"save_{word['id']}")
-        voice_btn = telebot.types.InlineKeyboardButton("🔊 Произнести", callback_data=f"voice_{word['id']}")
-        another_btn = telebot.types.InlineKeyboardButton("🎲 Еще", callback_data="random")
-        markup.add(save_btn, voice_btn, another_btn)
-
-        home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-        markup.add(home_btn)
-
+        markup = get_unified_keyboard(
+            word_id=word['id'],
+            mode="random",
+            is_saved=is_saved
+        )
         bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
     else:
         bot.send_message(chat_id, "😕 Что-то пошло не так. Попробуй позже.")
@@ -488,8 +495,12 @@ def send_random_word(chat_id, user_id):
 @bot.message_handler(commands=['mylist'])
 def mylist_command(message):
     """Показать список сохраненных слов"""
-    real_id = get_real_user_id(message)
-    show_words_list(chat_id=message.chat.id, user_id=real_id)
+    user_id = get_user_id(message)
+    if not user_id:
+        bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
+        return
+        
+    show_words_list(chat_id=message.chat.id, user_id=user_id)
 
 def show_words_list(chat_id, user_id, edit_message_id=None):
     """Отображает список сохраненных слов"""
@@ -498,8 +509,7 @@ def show_words_list(chat_id, user_id, edit_message_id=None):
     if not words:
         text = "📭 У тебя пока нет сохраненных слов. Используй /random и сохраняй интересные!"
         markup = telebot.types.InlineKeyboardMarkup()
-        home_btn = telebot.types.InlineKeyboardButton("🏠 Главное меню", callback_data="go_home")
-        markup.add(home_btn)
+        markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
         
         if edit_message_id:
             bot.edit_message_text(text, chat_id, edit_message_id, parse_mode='Markdown', reply_markup=markup)
@@ -515,8 +525,7 @@ def show_words_list(chat_id, user_id, edit_message_id=None):
     text += f"\n📊 Всего: *{len(words)}* слов"
 
     markup = telebot.types.InlineKeyboardMarkup()
-    home_btn = telebot.types.InlineKeyboardButton("🏠 Главное меню", callback_data="go_home")
-    markup.add(home_btn)
+    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
 
     if edit_message_id:
         bot.edit_message_text(text, chat_id, edit_message_id, parse_mode='Markdown', reply_markup=markup)
@@ -525,8 +534,16 @@ def show_words_list(chat_id, user_id, edit_message_id=None):
 
 @bot.message_handler(commands=['practice'])
 def practice_choice(message):
-    real_id = get_real_user_id(message)
-    saved_count = count_user_words(real_id)
+    """Выбор режима тренировки"""
+    user_id = get_user_id(message)
+    if not user_id:
+        bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
+        return
+        
+    user_states[user_id] = user_states.get(user_id, {})
+    saved_count = count_user_words(user_id)
+    
+    print(f"🎯 practice_choice: user_id={user_id}, saved_count={saved_count}")
 
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
 
@@ -538,12 +555,12 @@ def practice_choice(message):
     else:
         markup.add(btn_all)
 
-    home_btn = telebot.types.InlineKeyboardButton("🏠 Главное меню", callback_data="go_home")
-    markup.add(home_btn)
+    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
 
     bot.send_message(message.chat.id, "🎯 *Выбери режим тренировки*", parse_mode='Markdown', reply_markup=markup)
 
 def start_practice_session(user_id, mode, chat_id):
+    """Начинает сессию тренировки"""
     user_states[user_id] = {"mode": mode, "in_session": True, "last_word_id": None}
 
     if mode == "practice_all":
@@ -555,14 +572,20 @@ def start_practice_session(user_id, mode, chat_id):
             return
         
         if len(user_words) == 1 and user_states.get(user_id, {}).get("last_word_id") == user_words[0]['id']:
-            bot.send_message(chat_id, "📭 Ты повторил все слова! Хочешь добавить новые?")
+            markup = telebot.types.InlineKeyboardMarkup()
+            markup.add(
+                telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="random"),
+                telebot.types.InlineKeyboardButton("🔄 Ещё раз", callback_data="practice_mode_mylist"),
+                telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+            )
+            bot.send_message(chat_id, "📭 *Ты повторил все слова!*", parse_mode='Markdown', reply_markup=markup)
             return
             
         word = random.choice(user_words)
         
-        # Если слово совпадает с последним, пробуем выбрать другое
-        if user_states.get(user_id, {}).get("last_word_id") == word['id'] and len(user_words) > 1:
-            other_words = [w for w in user_words if w['id'] != word['id']]
+        last_id = user_states.get(user_id, {}).get("last_word_id")
+        if last_id and word['id'] == last_id and len(user_words) > 1:
+            other_words = [w for w in user_words if w['id'] != last_id]
             word = random.choice(other_words)
 
     if not word:
@@ -589,18 +612,20 @@ def start_practice_session(user_id, mode, chat_id):
         btn = telebot.types.InlineKeyboardButton(f"🔸 {opt}", callback_data=f"practice_answer_{word['id']}_{opt == word['translation']}")
         markup.add(btn)
 
-    show_btn = telebot.types.InlineKeyboardButton("👀 Показать ответ", callback_data=f"practice_show_{word['id']}")
-    voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word['id']}")
-    markup.add(show_btn, voice_btn)
-
-    home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-    markup.add(home_btn)
+    markup.add(
+        telebot.types.InlineKeyboardButton("👀 Показать ответ", callback_data=f"practice_show_{word['id']}"),
+        telebot.types.InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_{word['id']}"),
+        telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+    )
 
     bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
 
 # ----- ОБРАБОТЧИКИ ТЕКСТА (ПОИСК) -----
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
+    if message.text.startswith('/'):
+        return
+        
     word_text = message.text.strip().lower()
 
     conn = sqlite3.connect('words.db')
@@ -610,7 +635,17 @@ def handle_text(message):
     conn.close()
 
     if word_data:
-        real_id = get_real_user_id(message)
+        user_id = get_user_id(message)
+        if not user_id:
+            bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
+            return
+            
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word_data[0]))
+        is_saved = cursor.fetchone() is not None
+        conn.close()
+        
         word = {
             'id': word_data[0],
             'word': word_data[1],
@@ -620,48 +655,48 @@ def handle_text(message):
             'synonyms': word_data[5],
             'part_of_speech': word_data[6]
         }
-        card = format_word_card(word, user_id=real_id)
+        card = format_word_card(word, user_id=user_id)
 
-        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-        save_btn = telebot.types.InlineKeyboardButton("📥 Сохранить", callback_data=f"save_{word['id']}")
-        voice_btn = telebot.types.InlineKeyboardButton("🔊 Произнести", callback_data=f"voice_{word['id']}")
-        markup.add(save_btn, voice_btn)
+        markup = get_unified_keyboard(
+            word_id=word['id'],
+            mode="search",
+            is_saved=is_saved
+        )
 
-        home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-        markup.add(home_btn)
-
-        bot.reply_to(message, card, parse_mode='Markdown', reply_markup=markup)
+        bot.send_message(message.chat.id, card, parse_mode='Markdown', reply_markup=markup)
     else:
         markup = telebot.types.InlineKeyboardMarkup()
-        home_btn = telebot.types.InlineKeyboardButton("🏠 Главное меню", callback_data="go_home")
-        markup.add(home_btn)
-
-        bot.reply_to(message, f"😕 Не знаю слова '{message.text}'. Попробуй другое или зайди в меню.", reply_markup=markup)
+        markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+        bot.send_message(message.chat.id, f"😕 Не знаю слова '{message.text}'. Попробуй другое или зайди в меню.", reply_markup=markup)
 
 # ----- ОБРАБОТЧИКИ КНОПОК -----
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    # Защита от спама: проверяем, не обрабатывали ли уже этот callback
     callback_id = f"{call.from_user.id}_{call.message.message_id}_{call.data}"
     
-    if callback_id in processed_callbacks:
+    if call.data.startswith("practice_answer_") and "False" in call.data:
+        pass
+    elif callback_id in processed_callbacks:
         bot.answer_callback_query(call.id, "⏳ Уже обрабатывается...")
         return
+    else:
+        processed_callbacks[callback_id] = time.time()
     
-    processed_callbacks[callback_id] = time.time()
-    
-    # Очищаем старые записи (старше 10 секунд)
     current_time = time.time()
     expired = [k for k, v in processed_callbacks.items() if current_time - v > 10]
     for k in expired:
         del processed_callbacks[k]
     
-    real_id = get_real_user_id(call)
+    user_id = get_user_id(call)
+    if not user_id:
+        bot.answer_callback_query(call.id, "😕 Ошибка идентификации")
+        return
+        
     chat_id = call.message.chat.id
     message_id = call.message.message_id
 
-    # Сразу показываем, что обрабатываем
-    bot.answer_callback_query(call.id, "⏳ Обрабатываю...")
+    if not (call.data.startswith("practice_answer_") and "False" in call.data):
+        bot.answer_callback_query(call.id, "⏳ Обрабатываю...")
 
     # ===== НАВИГАЦИЯ =====
     if call.data == "go_home":
@@ -682,7 +717,8 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        send_random_word(chat_id, real_id)
+        user_states[user_id] = {"mode": "random"}
+        send_random_word(chat_id, user_id)
         return
     
     if call.data == "menu_practice":
@@ -690,8 +726,14 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        # БЕЗ служебного сообщения
-        practice_choice(call.message)
+        class SimpleMessage:
+            def __init__(self, chat_id, user_id, msg_id=0):
+                self.chat = type('obj', (object,), {'id': chat_id})
+                self.from_user = type('obj', (object,), {'id': user_id})
+                self.message_id = msg_id
+        
+        fake_msg = SimpleMessage(chat_id, user_id, message_id)
+        practice_choice(fake_msg)
         return
     
     if call.data == "menu_stats":
@@ -699,49 +741,40 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        # БЕЗ служебного сообщения
-        stats_command(call.message)
-        return
-    
-    if call.data == "menu_help":
-        try:
-            bot.delete_message(chat_id, message_id)
-        except:
-            pass
-        help_command(call.message)
+        class SimpleMessage:
+            def __init__(self, chat_id, user_id, msg_id=0):
+                self.chat = type('obj', (object,), {'id': chat_id})
+                self.from_user = type('obj', (object,), {'id': user_id})
+                self.message_id = msg_id
+        
+        fake_msg = SimpleMessage(chat_id, user_id, message_id)
+        stats_command(fake_msg)
         return
 
-    # ===== ПОКАЗАТЬ СПИСОК СЛОВ =====
+    # ===== СПИСОК СЛОВ =====
     if call.data == "show_mylist":
         try:
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        show_words_list(chat_id, real_id)
+        show_words_list(chat_id, user_id)
         return
 
     # ===== ОЗВУЧКА =====
     if call.data.startswith("voice_"):
         word_id = int(call.data.split("_")[1])
         
-        try:
-            bot.delete_message(chat_id, message_id)
-        except:
-            pass
-
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
         cursor.execute('SELECT word FROM words WHERE id = ?', (word_id,))
         word_text = cursor.fetchone()[0]
         conn.close()
 
-        bot.answer_callback_query(call.id, "🔊 Генерирую произношение...")
-
         audio_bytes = generate_voice(word_text)
         if audio_bytes:
             bot.send_voice(chat_id, audio_bytes, caption=f"Произношение: {word_text}")
         else:
-            bot.send_message(chat_id, "😕 Не удалось сгенерировать произношение. Попробуй позже.")
+            bot.send_message(chat_id, "😕 Не удалось сгенерировать произношение.")
         return
 
     # ===== ТРЕНИРОВКА =====
@@ -750,8 +783,7 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        # БЕЗ служебного сообщения
-        start_practice_session(real_id, "practice_all", chat_id)
+        start_practice_session(user_id, "practice_all", chat_id)
         return
     
     if call.data == "practice_mode_mylist":
@@ -759,8 +791,7 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        # БЕЗ служебного сообщения
-        start_practice_session(real_id, "practice_mylist", chat_id)
+        start_practice_session(user_id, "practice_mylist", chat_id)
         return
 
     # ===== СЛУЧАЙНОЕ СЛОВО =====
@@ -769,80 +800,114 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        user_states[real_id] = {"mode": "random"}
-        send_random_word(chat_id, real_id)
+        user_states[user_id] = {"mode": "random"}
+        send_random_word(chat_id, user_id)
         return
 
-    # ===== СОХРАНЕНИЕ СЛОВА =====
+    # ===== СОХРАНЕНИЕ =====
     if call.data.startswith("save_"):
         word_id = int(call.data.split("_")[1])
-        count = save_user_word(real_id, word_id)
+        count = save_user_word(user_id, word_id)
 
         if count:
-            bot.answer_callback_query(call.id, f"✅ Слово сохранено! Теперь у тебя {count} слов.")
+            bot.answer_callback_query(call.id, f"✅ Сохранено! Теперь {count} слов.")
         else:
-            bot.answer_callback_query(call.id, "✅ Слово сохранено!")
+            bot.answer_callback_query(call.id, "✅ Сохранено!")
 
-        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-        next_btn = telebot.types.InlineKeyboardButton("🎲 Еще слово", callback_data="random")
-        voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word_id}")
-        mylist_btn = telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="show_mylist")
-        home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-        markup.add(next_btn, voice_btn, mylist_btn, home_btn)
-
-        try:
-            bot.edit_message_reply_markup(chat_id, message_id, reply_markup=markup)
-        except:
-            bot.send_message(chat_id, "✅ Слово сохранено!", reply_markup=markup)
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM words WHERE id = ?', (word_id,))
+        word_data = cursor.fetchone()
+        conn.close()
+        
+        if word_data:
+            word = {
+                'id': word_data[0],
+                'word': word_data[1],
+                'translation': word_data[2],
+                'example': word_data[3],
+                'example_translation': word_data[4],
+                'synonyms': word_data[5],
+                'part_of_speech': word_data[6]
+            }
+            card = format_word_card(word, user_id=user_id)
+            markup = get_unified_keyboard(
+                word_id=word_id,
+                mode="random",
+                is_saved=True
+            )
+            
+            try:
+                bot.edit_message_text(card, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+            except:
+                bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
         return
 
     # ===== ПРОДОЛЖЕНИЕ ТРЕНИРОВКИ =====
     if call.data == "continue_practice":
-        mode = user_states.get(real_id, {}).get("mode")
+        mode = user_states.get(user_id, {}).get("mode")
         
         if not mode:
             try:
                 bot.delete_message(chat_id, message_id)
             except:
                 pass
-            # БЕЗ служебного сообщения
-            practice_choice(call.message)
+            class SimpleMessage:
+                def __init__(self, chat_id, user_id, msg_id=0):
+                    self.chat = type('obj', (object,), {'id': chat_id})
+                    self.from_user = type('obj', (object,), {'id': user_id})
+                    self.message_id = msg_id
+            fake_msg = SimpleMessage(chat_id, user_id, message_id)
+            practice_choice(fake_msg)
             return
         
-        # Получаем следующее слово
         if mode == "practice_all":
             word = get_random_word()
+            if not word:
+                bot.send_message(chat_id, "😕 Слова закончились.")
+                return
         else:
-            user_words = get_user_words(real_id)
+            user_words = get_user_words(user_id)
             if not user_words:
-                bot.send_message(chat_id, "📭 У тебя пока нет слов для тренировки.")
+                markup = telebot.types.InlineKeyboardMarkup()
+                markup.add(
+                    telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="random"),
+                    telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+                )
+                bot.send_message(chat_id, "📭 Нет слов для тренировки.", reply_markup=markup)
                 return
             
-            if len(user_words) == 1 and user_states.get(real_id, {}).get("last_word_id") == user_words[0]['id']:
-                bot.send_message(chat_id, "📭 Ты повторил все слова! Хочешь добавить новые?")
+            if len(user_words) == 1 and user_states.get(user_id, {}).get("last_word_id") == user_words[0]['id']:
+                markup = telebot.types.InlineKeyboardMarkup()
+                markup.add(
+                    telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="random"),
+                    telebot.types.InlineKeyboardButton("🔄 Ещё раз", callback_data="practice_mode_mylist"),
+                    telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+                )
+                bot.send_message(chat_id, "📭 *Ты повторил все слова!*", parse_mode='Markdown', reply_markup=markup)
                 return
                 
             word = random.choice(user_words)
             
-            # Если слово совпадает с последним, пробуем выбрать другое
-            last_id = user_states.get(real_id, {}).get("last_word_id")
+            last_id = user_states.get(user_id, {}).get("last_word_id")
             if last_id and word['id'] == last_id and len(user_words) > 1:
                 other_words = [w for w in user_words if w['id'] != last_id]
                 word = random.choice(other_words)
         
         if not word:
-            bot.send_message(chat_id, "😕 Не могу найти слово для тренировки.")
+            bot.send_message(chat_id, "😕 Не могу найти слово.")
             return
         
-        # Сохраняем ID последнего слова
-        user_states[real_id] = {"mode": mode, "last_word_id": word['id'], "in_session": True}
+        user_states[user_id]["last_word_id"] = word['id']
         
-        # Создаем варианты ответа
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
         cursor.execute('SELECT translation FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 3', (word['id'],))
         wrong_options = [row[0] for row in cursor.fetchall()]
         conn.close()
+        
+        while len(wrong_options) < 3:
+            wrong_options.append("???")
         
         options = [word['translation']] + wrong_options
         random.shuffle(options)
@@ -853,20 +918,29 @@ def handle_callback(call):
         markup = telebot.types.InlineKeyboardMarkup(row_width=1)
         
         for opt in options:
-            btn = telebot.types.InlineKeyboardButton(f"🔸 {opt}", callback_data=f"practice_answer_{word['id']}_{opt == word['translation']}")
-            markup.add(btn)
+            markup.add(telebot.types.InlineKeyboardButton(f"🔸 {opt}", callback_data=f"practice_answer_{word['id']}_{opt == word['translation']}"))
         
-        show_btn = telebot.types.InlineKeyboardButton("👀 Показать ответ", callback_data=f"practice_show_{word['id']}")
-        voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word['id']}")
-        markup.add(show_btn, voice_btn)
-        
-        home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-        markup.add(home_btn)
+        markup.add(
+            telebot.types.InlineKeyboardButton("👀 Показать ответ", callback_data=f"practice_show_{word['id']}"),
+            telebot.types.InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_{word['id']}"),
+            telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+        )
         
         try:
-            bot.edit_message_text(question, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+            bot.delete_message(chat_id, message_id)
         except:
-            bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
+            pass
+        
+        bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
+        
+        keys_to_delete = []
+        for key in list(processed_callbacks.keys()):
+            if key.startswith(f"{user_id}_"):
+                keys_to_delete.append(key)
+        
+        for key in keys_to_delete:
+            del processed_callbacks[key]
+        
         return
 
     # ===== ОТВЕТЫ В ТРЕНИРОВКЕ =====
@@ -875,13 +949,14 @@ def handle_callback(call):
         word_id = int(parts[2])
         is_correct = parts[3] == "True"
 
-        update_word_stats(real_id, word_id, is_correct)
+        print(f"🔥 practice_answer_: user_id={user_id}, word_id={word_id}, is_correct={is_correct}")
 
         if not is_correct:
-            bot.answer_callback_query(call.id, "❌ Неправильно", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Неправильно! Попробуй другой вариант.", show_alert=True)
             return
 
-        bot.answer_callback_query(call.id, "✅ Правильно! Молодец!")
+        update_word_stats(user_id, word_id, True)
+        bot.answer_callback_query(call.id, "✅ Правильно!")
 
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
@@ -900,15 +975,18 @@ def handle_callback(call):
                 'part_of_speech': word_data[6]
             }
 
-            card = format_word_card(word, user_id=real_id)
-
-            markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-            save_btn = telebot.types.InlineKeyboardButton("📥 Сохранить", callback_data=f"save_{word_id}")
-            voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word_id}")
-            next_btn = telebot.types.InlineKeyboardButton("🎯 Далее", callback_data="continue_practice")
-            home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-
-            markup.add(save_btn, voice_btn, next_btn, home_btn)
+            conn = sqlite3.connect('words.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word_id))
+            is_saved = cursor.fetchone() is not None
+            conn.close()
+            
+            card = format_word_card(word, user_id=user_id)
+            markup = get_unified_keyboard(
+                word_id=word_id,
+                mode="practice",
+                is_saved=is_saved
+            )
 
             try:
                 bot.edit_message_text(f"✅ *Верно!*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
@@ -920,8 +998,7 @@ def handle_callback(call):
     if call.data.startswith("practice_show_"):
         word_id = int(call.data.split("_")[2])
         
-        # Добавляем обновление статистики (неправильный ответ)
-        update_word_stats(real_id, word_id, False)
+        update_word_stats(user_id, word_id, False)
 
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
@@ -942,15 +1019,18 @@ def handle_callback(call):
 
             bot.answer_callback_query(call.id, "👀 Вот правильный ответ!")
 
-            card = format_word_card(word, user_id=real_id)
-
-            markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-            save_btn = telebot.types.InlineKeyboardButton("📥 Сохранить", callback_data=f"save_{word_id}")
-            voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word_id}")
-            next_btn = telebot.types.InlineKeyboardButton("🎯 Далее", callback_data="continue_practice")
-            home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-
-            markup.add(save_btn, voice_btn, next_btn, home_btn)
+            conn = sqlite3.connect('words.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word_id))
+            is_saved = cursor.fetchone() is not None
+            conn.close()
+            
+            card = format_word_card(word, user_id=user_id)
+            markup = get_unified_keyboard(
+                word_id=word_id,
+                mode="practice",
+                is_saved=is_saved
+            )
 
             try:
                 bot.edit_message_text(f"👀 *Правильный ответ:*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
@@ -958,16 +1038,15 @@ def handle_callback(call):
                 bot.send_message(chat_id, f"👀 *Правильный ответ:*\n\n{card}", parse_mode='Markdown', reply_markup=markup)
         return
 
-# ----- ФУНКЦИЯ ДЛЯ ЗАПУСКА БОТА В ПОТОКЕ -----
+# ----- ЗАПУСК БОТА -----
 def run_bot():
-    """Запускает бота в отдельном потоке"""
+    """Запускает бота"""
     try:
         bot.infinity_polling(timeout=30, long_polling_timeout=20)
     except Exception as e:
         logger.error(f"Ошибка бота: {e}")
         time.sleep(5)
 
-# ----- ЗАПУСК ПРИЛОЖЕНИЯ -----
 if __name__ == "__main__":
     print("Запускаем приложение...")
     try:
@@ -981,15 +1060,13 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Ошибка при проверке gTTS: {e}")
 
-        # Запускаем бота в фоновом потоке
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
         print("✅ Бот запущен")
 
-        # Запускаем Flask
         port = int(os.environ.get('PORT', 10000))
         print(f"🚀 Запускаем Flask на порту {port}...")
-        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+        app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
 
     except Exception as e:
         print(f"❌ Критическая ошибка: {e}")
