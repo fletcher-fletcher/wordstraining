@@ -553,7 +553,17 @@ def start_practice_session(user_id, mode, chat_id):
         if not user_words:
             bot.send_message(chat_id, "📭 У тебя пока нет слов для тренировки. Сохрани слова через /random")
             return
+        
+        if len(user_words) == 1 and user_states.get(user_id, {}).get("last_word_id") == user_words[0]['id']:
+            bot.send_message(chat_id, "📭 Ты повторил все слова! Хочешь добавить новые?")
+            return
+            
         word = random.choice(user_words)
+        
+        # Если слово совпадает с последним, пробуем выбрать другое
+        if user_states.get(user_id, {}).get("last_word_id") == word['id'] and len(user_words) > 1:
+            other_words = [w for w in user_words if w['id'] != word['id']]
+            word = random.choice(other_words)
 
     if not word:
         bot.send_message(chat_id, "😕 Не могу найти слово для тренировки. Попробуй позже.")
@@ -680,8 +690,8 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        sent_msg = bot.send_message(chat_id, "⚡ Загружаем тренировку...")
-        practice_choice(sent_msg)
+        # БЕЗ служебного сообщения
+        practice_choice(call.message)
         return
     
     if call.data == "menu_stats":
@@ -689,8 +699,8 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        sent_msg = bot.send_message(chat_id, "📊 Загружаем статистику...")
-        stats_command(sent_msg)
+        # БЕЗ служебного сообщения
+        stats_command(call.message)
         return
     
     if call.data == "menu_help":
@@ -698,8 +708,7 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        sent_msg = bot.send_message(chat_id, "❓ Загружаем помощь...")
-        help_command(sent_msg)
+        help_command(call.message)
         return
 
     # ===== ПОКАЗАТЬ СПИСОК СЛОВ =====
@@ -741,7 +750,7 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        bot.send_message(chat_id, "🎯 Начинаем тренировку по *всем словам*!", parse_mode='Markdown')
+        # БЕЗ служебного сообщения
         start_practice_session(real_id, "practice_all", chat_id)
         return
     
@@ -750,7 +759,7 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        bot.send_message(chat_id, "🎯 Начинаем тренировку по *твоим словам*!", parse_mode='Markdown')
+        # БЕЗ служебного сообщения
         start_practice_session(real_id, "practice_mylist", chat_id)
         return
 
@@ -789,28 +798,37 @@ def handle_callback(call):
 
     # ===== ПРОДОЛЖЕНИЕ ТРЕНИРОВКИ =====
     if call.data == "continue_practice":
-        # Получаем режим тренировки из состояния пользователя
         mode = user_states.get(real_id, {}).get("mode")
         
         if not mode:
-            # Если режим не найден, возвращаемся к выбору
             try:
                 bot.delete_message(chat_id, message_id)
             except:
                 pass
-            sent_msg = bot.send_message(chat_id, "⚡ Возвращаемся к тренировке...")
-            practice_choice(sent_msg)
+            # БЕЗ служебного сообщения
+            practice_choice(call.message)
             return
         
         # Получаем следующее слово
         if mode == "practice_all":
             word = get_random_word()
-        else:  # practice_mylist
+        else:
             user_words = get_user_words(real_id)
             if not user_words:
                 bot.send_message(chat_id, "📭 У тебя пока нет слов для тренировки.")
                 return
+            
+            if len(user_words) == 1 and user_states.get(real_id, {}).get("last_word_id") == user_words[0]['id']:
+                bot.send_message(chat_id, "📭 Ты повторил все слова! Хочешь добавить новые?")
+                return
+                
             word = random.choice(user_words)
+            
+            # Если слово совпадает с последним, пробуем выбрать другое
+            last_id = user_states.get(real_id, {}).get("last_word_id")
+            if last_id and word['id'] == last_id and len(user_words) > 1:
+                other_words = [w for w in user_words if w['id'] != last_id]
+                word = random.choice(other_words)
         
         if not word:
             bot.send_message(chat_id, "😕 Не могу найти слово для тренировки.")
