@@ -35,6 +35,9 @@ bot.timeout = 30
 # Хранилище состояний пользователей
 user_states = {}
 
+# Хранилище обработанных callback'ов (для защиты от спама)
+processed_callbacks = {}
+
 # Блокировка для gTTS
 tts_lock = Lock()
 
@@ -628,13 +631,34 @@ def handle_text(message):
 # ----- ОБРАБОТЧИКИ КНОПОК -----
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    # Защита от спама: проверяем, не обрабатывали ли уже этот callback
+    callback_id = f"{call.from_user.id}_{call.message.message_id}_{call.data}"
+    
+    if callback_id in processed_callbacks:
+        bot.answer_callback_query(call.id, "⏳ Уже обрабатывается...")
+        return
+    
+    processed_callbacks[callback_id] = time.time()
+    
+    # Очищаем старые записи (старше 10 секунд)
+    current_time = time.time()
+    expired = [k for k, v in processed_callbacks.items() if current_time - v > 10]
+    for k in expired:
+        del processed_callbacks[k]
+    
     real_id = get_real_user_id(call)
     chat_id = call.message.chat.id
     message_id = call.message.message_id
 
+    # Сразу показываем, что обрабатываем
+    bot.answer_callback_query(call.id, "⏳ Обрабатываю...")
+
     # ===== НАВИГАЦИЯ =====
     if call.data == "go_home":
-        bot.delete_message(chat_id, message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
         show_main_menu(chat_id)
         return
     
@@ -644,37 +668,57 @@ def handle_callback(call):
 
     # ===== ГЛАВНОЕ МЕНЮ =====
     if call.data == "menu_random":
-        bot.delete_message(chat_id, message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
         send_random_word(chat_id, real_id)
         return
     
     if call.data == "menu_practice":
-        bot.delete_message(chat_id, message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
         sent_msg = bot.send_message(chat_id, "⚡ Загружаем тренировку...")
         practice_choice(sent_msg)
         return
     
     if call.data == "menu_stats":
-        bot.delete_message(chat_id, message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
         sent_msg = bot.send_message(chat_id, "📊 Загружаем статистику...")
         stats_command(sent_msg)
         return
     
     if call.data == "menu_help":
-        bot.delete_message(chat_id, message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
         sent_msg = bot.send_message(chat_id, "❓ Загружаем помощь...")
         help_command(sent_msg)
         return
 
     # ===== ПОКАЗАТЬ СПИСОК СЛОВ =====
     if call.data == "show_mylist":
-        bot.delete_message(chat_id, message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
         show_words_list(chat_id, real_id)
         return
 
     # ===== ОЗВУЧКА =====
     if call.data.startswith("voice_"):
         word_id = int(call.data.split("_")[1])
+        
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
 
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
@@ -693,18 +737,29 @@ def handle_callback(call):
 
     # ===== ТРЕНИРОВКА =====
     if call.data == "practice_mode_all":
-        bot.edit_message_text("🎯 Начинаем тренировку по *всем словам*!", chat_id, message_id, parse_mode='Markdown')
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        bot.send_message(chat_id, "🎯 Начинаем тренировку по *всем словам*!", parse_mode='Markdown')
         start_practice_session(real_id, "practice_all", chat_id)
         return
     
     if call.data == "practice_mode_mylist":
-        bot.edit_message_text("🎯 Начинаем тренировку по *твоим словам*!", chat_id, message_id, parse_mode='Markdown')
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        bot.send_message(chat_id, "🎯 Начинаем тренировку по *твоим словам*!", parse_mode='Markdown')
         start_practice_session(real_id, "practice_mylist", chat_id)
         return
 
     # ===== СЛУЧАЙНОЕ СЛОВО =====
     if call.data == "random":
-        bot.delete_message(chat_id, message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
         user_states[real_id] = {"mode": "random"}
         send_random_word(chat_id, real_id)
         return
@@ -726,7 +781,10 @@ def handle_callback(call):
         home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
         markup.add(next_btn, voice_btn, mylist_btn, home_btn)
 
-        bot.edit_message_reply_markup(chat_id, message_id, reply_markup=markup)
+        try:
+            bot.edit_message_reply_markup(chat_id, message_id, reply_markup=markup)
+        except:
+            bot.send_message(chat_id, "✅ Слово сохранено!", reply_markup=markup)
         return
 
     # ===== ПРОДОЛЖЕНИЕ ТРЕНИРОВКИ =====
@@ -736,7 +794,10 @@ def handle_callback(call):
         
         if not mode:
             # Если режим не найден, возвращаемся к выбору
-            bot.delete_message(chat_id, message_id)
+            try:
+                bot.delete_message(chat_id, message_id)
+            except:
+                pass
             sent_msg = bot.send_message(chat_id, "⚡ Возвращаемся к тренировке...")
             practice_choice(sent_msg)
             return
@@ -784,7 +845,10 @@ def handle_callback(call):
         home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
         markup.add(home_btn)
         
-        bot.edit_message_text(question, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+        try:
+            bot.edit_message_text(question, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+        except:
+            bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
         return
 
     # ===== ОТВЕТЫ В ТРЕНИРОВКЕ =====
@@ -828,7 +892,10 @@ def handle_callback(call):
 
             markup.add(save_btn, voice_btn, next_btn, home_btn)
 
-            bot.edit_message_text(f"✅ *Верно!*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+            try:
+                bot.edit_message_text(f"✅ *Верно!*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+            except:
+                bot.send_message(chat_id, f"✅ *Верно!*\n\n{card}", parse_mode='Markdown', reply_markup=markup)
         return
 
     # ===== ПОКАЗАТЬ ОТВЕТ =====
@@ -867,7 +934,10 @@ def handle_callback(call):
 
             markup.add(save_btn, voice_btn, next_btn, home_btn)
 
-            bot.edit_message_text(f"👀 *Правильный ответ:*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+            try:
+                bot.edit_message_text(f"👀 *Правильный ответ:*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+            except:
+                bot.send_message(chat_id, f"👀 *Правильный ответ:*\n\n{card}", parse_mode='Markdown', reply_markup=markup)
         return
 
 # ----- ФУНКЦИЯ ДЛЯ ЗАПУСКА БОТА В ПОТОКЕ -----
