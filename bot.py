@@ -766,7 +766,7 @@ def handle_callback(call):
             markup = telebot.types.InlineKeyboardMarkup(row_width=2)
             save_btn = telebot.types.InlineKeyboardButton("📥 Сохранить", callback_data=f"save_{word_id}")
             voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word_id}")
-            next_btn = telebot.types.InlineKeyboardButton("🎲 Далее", callback_data="random")
+            next_btn = telebot.types.InlineKeyboardButton("🎯 Далее", callback_data="continue_practice")
             home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
 
             markup.add(save_btn, voice_btn, next_btn, home_btn)
@@ -805,7 +805,7 @@ def handle_callback(call):
             markup = telebot.types.InlineKeyboardMarkup(row_width=2)
             save_btn = telebot.types.InlineKeyboardButton("📥 Сохранить", callback_data=f"save_{word_id}")
             voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word_id}")
-            next_btn = telebot.types.InlineKeyboardButton("🎲 Далее", callback_data="random")
+            next_btn = telebot.types.InlineKeyboardButton("🎯 Далее", callback_data="continue_practice")
             home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
 
             markup.add(save_btn, voice_btn, next_btn, home_btn)
