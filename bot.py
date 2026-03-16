@@ -541,7 +541,7 @@ def practice_choice(message):
     bot.send_message(message.chat.id, "🎯 *Выбери режим тренировки*", parse_mode='Markdown', reply_markup=markup)
 
 def start_practice_session(user_id, mode, chat_id):
-    user_states[user_id] = {"mode": mode, "in_session": True}
+    user_states[user_id] = {"mode": mode, "in_session": True, "last_word_id": None}
 
     if mode == "practice_all":
         word = get_random_word()
@@ -651,7 +651,6 @@ def handle_callback(call):
     if call.data == "menu_practice":
         bot.delete_message(chat_id, message_id)
         sent_msg = bot.send_message(chat_id, "⚡ Загружаем тренировку...")
-        # В practice_choice уже используется get_real_user_id
         practice_choice(sent_msg)
         return
     
@@ -728,6 +727,64 @@ def handle_callback(call):
         markup.add(next_btn, voice_btn, mylist_btn, home_btn)
 
         bot.edit_message_reply_markup(chat_id, message_id, reply_markup=markup)
+        return
+
+    # ===== ПРОДОЛЖЕНИЕ ТРЕНИРОВКИ =====
+    if call.data == "continue_practice":
+        # Получаем режим тренировки из состояния пользователя
+        mode = user_states.get(real_id, {}).get("mode")
+        
+        if not mode:
+            # Если режим не найден, возвращаемся к выбору
+            bot.delete_message(chat_id, message_id)
+            sent_msg = bot.send_message(chat_id, "⚡ Возвращаемся к тренировке...")
+            practice_choice(sent_msg)
+            return
+        
+        # Получаем следующее слово
+        if mode == "practice_all":
+            word = get_random_word()
+        else:  # practice_mylist
+            user_words = get_user_words(real_id)
+            if not user_words:
+                bot.send_message(chat_id, "📭 У тебя пока нет слов для тренировки.")
+                return
+            word = random.choice(user_words)
+        
+        if not word:
+            bot.send_message(chat_id, "😕 Не могу найти слово для тренировки.")
+            return
+        
+        # Сохраняем ID последнего слова
+        user_states[real_id] = {"mode": mode, "last_word_id": word['id'], "in_session": True}
+        
+        # Создаем варианты ответа
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT translation FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 3', (word['id'],))
+        wrong_options = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        options = [word['translation']] + wrong_options
+        random.shuffle(options)
+        
+        mode_text = "из твоего списка" if mode == "practice_mylist" else "из словаря"
+        question = f"❓ *Как переводится слово ({mode_text}):*\n*{word['word']}*"
+        
+        markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+        
+        for opt in options:
+            btn = telebot.types.InlineKeyboardButton(f"🔸 {opt}", callback_data=f"practice_answer_{word['id']}_{opt == word['translation']}")
+            markup.add(btn)
+        
+        show_btn = telebot.types.InlineKeyboardButton("👀 Показать ответ", callback_data=f"practice_show_{word['id']}")
+        voice_btn = telebot.types.InlineKeyboardButton("🔊 Послушать", callback_data=f"voice_{word['id']}")
+        markup.add(show_btn, voice_btn)
+        
+        home_btn = telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+        markup.add(home_btn)
+        
+        bot.edit_message_text(question, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
         return
 
     # ===== ОТВЕТЫ В ТРЕНИРОВКЕ =====
