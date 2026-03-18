@@ -678,11 +678,9 @@ def notify_command(message):
     
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        telebot.types.InlineKeyboardButton("✅ Включить" if status == "❌ Выключены" else "🔄 Перезапустить", 
-                                          callback_data="notify_on"),
+        telebot.types.InlineKeyboardButton("✅ Включить", callback_data="notify_on"),
         telebot.types.InlineKeyboardButton("❌ Выключить", callback_data="notify_off"),
         telebot.types.InlineKeyboardButton("⏰ Установить время", callback_data="notify_set_time"),
-        telebot.types.InlineKeyboardButton("📋 Мои настройки", callback_data="notify_show"),
         telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
     )
     
@@ -1022,52 +1020,6 @@ def handle_callback(call):
         except:
             pass
         show_main_menu(chat_id)
-        return
-    
-    if call.data == "notify_show":
-        conn = sqlite3.connect('words.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT notifications, notify_time, last_notification FROM user_settings WHERE user_id = ?', (user_id,))
-        settings = cursor.fetchone()
-        
-        today = time.strftime('%Y-%m-%d')
-        cursor.execute('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND sent_date = ?', (user_id, today))
-        sent_today = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM words')
-        total_words = cursor.fetchone()[0]
-        conn.close()
-        
-        if not settings:
-            bot.answer_callback_query(call.id, "Настройки не найдены")
-            return
-        
-        status = "✅ Включены" if settings[0] == 1 else "❌ Выключены"
-        times = settings[1].replace(',', ', ')
-        last = settings[2] if settings[2] else "никогда"
-        
-        detail_text = f"""
-📋 *Детальные настройки*
-
-🔔 *Статус:* {status}
-⏰ *Время отправки:* {times}
-📅 *Последнее уведомление:* {last}
-📊 *Отправлено сегодня:* {sent_today} слов
-📚 *Всего слов в словаре:* {total_words}
-
-Каждый день ты получаешь новые слова, пока не увидишь все.
-После этого цикл повторяется заново.
-"""
-        
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="notify_back"))
-        
-        try:
-            bot.edit_message_text(detail_text, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
-        except:
-            bot.send_message(chat_id, detail_text, parse_mode='Markdown', reply_markup=markup)
-        
-        bot.answer_callback_query(call.id)
         return
     
     if call.data == "notify_set_time":
