@@ -12,6 +12,8 @@ from threading import Lock
 import logging
 from requests.exceptions import ReadTimeout, ConnectionError
 from flask import Flask
+import schedule
+from datetime import datetime
 
 # Настройка логирования
 logging.basicConfig(
@@ -93,21 +95,30 @@ def init_database():
         )
     ''')
 
-    # Таблица для статистики по словам
+    # Таблица для уведомлений (история отправленных слов)
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS word_stats (
+        CREATE TABLE IF NOT EXISTS notifications (
             user_id INTEGER,
             word_id INTEGER,
-            correct INTEGER DEFAULT 0,
-            wrong INTEGER DEFAULT 0,
-            last_review TIMESTAMP,
-            PRIMARY KEY (user_id, word_id)
+            sent_date DATE,
+            UNIQUE(user_id, word_id, sent_date)
+        )
+    ''')
+    
+    # Таблица для настроек пользователей
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            notifications INTEGER DEFAULT 0,
+            notify_time TEXT DEFAULT '10:00,15:00,20:00',
+            last_notification DATE
         )
     ''')
 
     # Индексы для быстрого поиска
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_words_user_id ON user_words(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_words_word ON words(word)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_notifications_user_date ON notifications(user_id, sent_date)')
 
     # Заполняем словами из words_database
     for word_data in words_database:
@@ -156,6 +167,64 @@ def get_random_word(exclude_id=None):
         }
     return None
 
+def get_unseen_word(user_id):
+    """Возвращает случайное слово, которое ещё не показывали сегодня"""
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    
+    today = time.strftime('%Y-%m-%d')
+    
+    # Слова, которые уже показывали сегодня
+    cursor.execute('''
+        SELECT word_id FROM notifications 
+        WHERE user_id = ? AND sent_date = ?
+    ''', (user_id, today))
+    seen_today = [row[0] for row in cursor.fetchall()]
+    
+    # Если показали все слова, сбрасываем
+    cursor.execute('SELECT COUNT(*) FROM words')
+    total_words = cursor.fetchone()[0]
+    
+    if len(seen_today) >= total_words:
+        cursor.execute('DELETE FROM notifications WHERE user_id = ? AND sent_date = ?', 
+                      (user_id, today))
+        seen_today = []
+    
+    # Получаем случайное слово из непоказанных
+    if seen_today:
+        placeholders = ','.join(['?'] * len(seen_today))
+        cursor.execute(f'''
+            SELECT * FROM words 
+            WHERE id NOT IN ({placeholders})
+            ORDER BY RANDOM() LIMIT 1
+        ''', seen_today)
+    else:
+        cursor.execute('SELECT * FROM words ORDER BY RANDOM() LIMIT 1')
+    
+    word_data = cursor.fetchone()
+    
+    if word_data:
+        word = {
+            'id': word_data[0],
+            'word': word_data[1],
+            'translation': word_data[2],
+            'example': word_data[3],
+            'example_translation': word_data[4],
+            'synonyms': word_data[5],
+            'part_of_speech': word_data[6]
+        }
+        
+        cursor.execute('''
+            INSERT INTO notifications (user_id, word_id, sent_date)
+            VALUES (?, ?, ?)
+        ''', (user_id, word['id'], today))
+        conn.commit()
+    else:
+        word = None
+    
+    conn.close()
+    return word
+
 def save_user_word(user_id, word_id, notes=""):
     """Сохраняет слово в список пользователя"""
     conn = sqlite3.connect('words.db')
@@ -175,11 +244,6 @@ def save_user_word(user_id, word_id, notes=""):
             INSERT INTO user_words (user_id, word_id, notes)
             VALUES (?, ?, ?)
         ''', (user_id, word_id, notes))
-        
-        cursor.execute('''
-            INSERT OR IGNORE INTO word_stats (user_id, word_id, correct, wrong, last_review)
-            VALUES (?, ?, 0, 0, CURRENT_TIMESTAMP)
-        ''', (user_id, word_id))
         
         conn.commit()
         
@@ -232,85 +296,6 @@ def count_user_words(user_id):
     conn.close()
     return count
 
-def update_word_stats(user_id, word_id, correct):
-    """Обновляет статистику по слову"""
-    print(f"📊 update_word_stats: user_id={user_id}, word_id={word_id}, correct={correct}")
-    
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT * FROM word_stats WHERE user_id = ? AND word_id = ?', 
-                  (user_id, word_id))
-    existing = cursor.fetchone()
-    
-    if existing:
-        if correct:
-            cursor.execute('''
-                UPDATE word_stats 
-                SET correct = correct + 1, last_review = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND word_id = ?
-            ''', (user_id, word_id))
-        else:
-            cursor.execute('''
-                UPDATE word_stats 
-                SET wrong = wrong + 1, last_review = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND word_id = ?
-            ''', (user_id, word_id))
-    else:
-        if correct:
-            cursor.execute('''
-                INSERT INTO word_stats (user_id, word_id, correct, wrong, last_review)
-                VALUES (?, ?, 1, 0, CURRENT_TIMESTAMP)
-            ''', (user_id, word_id))
-        else:
-            cursor.execute('''
-                INSERT INTO word_stats (user_id, word_id, correct, wrong, last_review)
-                VALUES (?, ?, 0, 1, CURRENT_TIMESTAMP)
-            ''', (user_id, word_id))
-    
-    conn.commit()
-    conn.close()
-    print(f"   Статистика обновлена")
-
-def get_word_stats(user_id, word_id):
-    """Возвращает статистику по конкретному слову"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT correct, wrong FROM word_stats WHERE user_id = ? AND word_id = ?',
-                  (user_id, word_id))
-    stats = cursor.fetchone()
-    conn.close()
-
-    if stats:
-        return {'correct': stats[0], 'wrong': stats[1]}
-    return {'correct': 0, 'wrong': 0}
-
-def get_total_stats(user_id):
-    """Возвращает общую статистику пользователя"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT 
-            COALESCE(SUM(correct), 0) as total_correct,
-            COALESCE(SUM(wrong), 0) as total_wrong
-        FROM word_stats 
-        WHERE user_id = ?
-    ''', (user_id,))
-    
-    result = cursor.fetchone()
-    conn.close()
-    
-    correct = int(result[0]) if result and result[0] is not None else 0
-    wrong = int(result[1]) if result and result[1] is not None else 0
-    
-    print(f"📈 get_total_stats для user_id={user_id}: correct={correct}, wrong={wrong}")
-    
-    return {
-        'correct': correct,
-        'wrong': wrong
-    }
-
 # ----- ОЗВУЧКА ЧЕРЕЗ GTTS -----
 def generate_voice(word):
     """Генерирует голосовое сообщение с произношением слова"""
@@ -326,8 +311,8 @@ def generate_voice(word):
         return None
 
 # ----- ФОРМАТИРОВАНИЕ СООБЩЕНИЙ -----
-def format_word_card(word, show_stats=True, user_id=None):
-    """Форматирует слово в красивую карточку"""
+def format_word_card(word, user_id=None):
+    """Форматирует слово в красивую карточку (без статистики)"""
     pos_emoji = {
         "adjective": "📘",
         "noun": "📗",
@@ -346,13 +331,6 @@ def format_word_card(word, show_stats=True, user_id=None):
     card += f"{word['example']}\n"
     card += f"_{word['example_translation']}_\n\n"
     card += f"🔗 *Синонимы:* {word['synonyms']}"
-
-    if show_stats and user_id:
-        stats = get_word_stats(user_id, word['id'])
-        if stats['correct'] > 0 or stats['wrong'] > 0:
-            total = stats['correct'] + stats['wrong']
-            percent = (stats['correct'] / total * 100) if total > 0 else 0
-            card += f"\n\n📊 *Статистика:* ✅ {stats['correct']} | ❌ {stats['wrong']} ({percent:.0f}%)"
 
     return card
 
@@ -394,15 +372,162 @@ def get_unified_keyboard(word_id=None, mode="random", is_saved=False):
     return markup
 
 def get_main_menu_keyboard():
-    """Создает клавиатуру главного меню (без кнопки Помощь)"""
+    """Создает клавиатуру главного меню"""
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="menu_random"),
         telebot.types.InlineKeyboardButton("🎯 Тренировка", callback_data="menu_practice"),
         telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="show_mylist"),
-        telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="menu_stats")
+        telebot.types.InlineKeyboardButton("🔔 Уведомления", callback_data="menu_notify"),
+        telebot.types.InlineKeyboardButton("📝 Экзамен", callback_data="menu_exam")
     )
     return markup
+
+# ----- ФУНКЦИИ ДЛЯ УВЕДОМЛЕНИЙ -----
+def should_notify_now(user_id, current_time):
+    """Проверяет, нужно ли отправить уведомление сейчас (по точному времени)"""
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT notify_time FROM user_settings WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result and result[0]:
+        times = result[0].split(',')
+        # Сравниваем точное время ЧЧ:ММ
+        return current_time in [t.strip() for t in times]
+    return False
+
+def send_scheduled_words():
+    """Отправляет слова всем пользователям по расписанию"""
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT user_id FROM user_settings WHERE notifications = 1')
+    users = cursor.fetchall()
+    conn.close()
+    
+    # Текущее время с минутами!
+    current_time = datetime.now().strftime('%H:%M')
+    
+    print(f"⏰ Проверка уведомлений в {current_time}")  # Отладка
+    
+    for (user_id,) in users:
+        try:
+            if should_notify_now(user_id, current_time):
+                print(f"📨 Отправка пользователю {user_id} в {current_time}")
+                word = get_unseen_word(user_id)
+                if word:
+                    card = format_word_card(word, user_id=user_id)
+                    markup = get_unified_keyboard(
+                        word_id=word['id'],
+                        mode="random",
+                        is_saved=False
+                    )
+                    bot.send_message(
+                        user_id, 
+                        f"🔔 *Слово дня*\n\n{card}", 
+                        parse_mode='Markdown',
+                        reply_markup=markup
+                    )
+                    
+                    conn = sqlite3.connect('words.db')
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE user_settings 
+                        SET last_notification = date('now') 
+                        WHERE user_id = ?
+                    ''', (user_id,))
+                    conn.commit()
+                    conn.close()
+        except Exception as e:
+            print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+
+def check_and_send():
+    """Проверяет текущее время и отправляет уведомления (каждую минуту)"""
+    # Убираем проверку :00 - отправляем всегда
+    threading.Thread(target=send_scheduled_words).start()
+
+def start_scheduler():
+    """Запускает планировщик уведомлений"""
+    schedule.every(1).minutes.do(check_and_send)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# ----- ФУНКЦИИ ДЛЯ ЭКЗАМЕНА -----
+def send_exam_question(chat_id, user_id):
+    """Отправляет следующий вопрос экзамена"""
+    session = user_states.get(f"exam_{user_id}")
+    
+    if not session or session['current'] >= session['total']:
+        finish_exam(chat_id, user_id)
+        return
+    
+    word = session['words'][session['current']]
+    
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT translation FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 3', (word['id'],))
+    wrong_options = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    
+    options = [word['translation']] + wrong_options
+    random.shuffle(options)
+    
+    question = f"❓ *Вопрос {session['current'] + 1}/{session['total']}*\n\n"
+    question += f"Как переводится слово:\n*{word['word']}*"
+    
+    markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+    
+    for opt in options:
+        is_correct = (opt == word['translation'])
+        markup.add(telebot.types.InlineKeyboardButton(
+            f"🔸 {opt}", 
+            callback_data=f"exam_answer_{word['id']}_{is_correct}"
+        ))
+    
+    bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
+
+def finish_exam(chat_id, user_id):
+    """Завершает экзамен и показывает результаты"""
+    session = user_states.get(f"exam_{user_id}")
+    
+    if not session:
+        return
+    
+    total = session['total']
+    correct = session['correct']
+    wrong = session['wrong']
+    percentage = (correct / total * 100) if total > 0 else 0
+    time_spent = int(time.time() - session['start_time'])
+    
+    result = f"📊 *Результаты экзамена*\n\n"
+    result += f"✅ Правильно: {correct}\n"
+    result += f"❌ Неправильно: {wrong}\n"
+    result += f"🎯 Точность: {percentage:.1f}%\n"
+    result += f"⏱ Время: {time_spent // 60} мин {time_spent % 60} сек\n\n"
+    
+    if percentage >= 90:
+        result += "🏆 Отлично! Ты мастер слов!"
+    elif percentage >= 70:
+        result += "👍 Хорошо! Есть куда расти."
+    elif percentage >= 50:
+        result += "👌 Неплохо, но нужно повторить."
+    else:
+        result += "📚 Стоит ещё поучить эти слова."
+    
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton("🔄 Ещё экзамен", callback_data="exam_again"),
+        telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="show_mylist"),
+        telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+    )
+    
+    bot.send_message(chat_id, result, parse_mode='Markdown', reply_markup=markup)
+    
+    if f"exam_{user_id}" in user_states:
+        del user_states[f"exam_{user_id}"]
 
 # ----- ОБРАБОТЧИКИ КОМАНД -----
 @bot.message_handler(commands=['start'])
@@ -421,7 +546,8 @@ def start_command(message):
 /random — случайное слово
 /practice — тренировка
 /mylist — мои сохраненные слова
-/stats — статистика
+/notify — настроить уведомления
+/exam — проверить знания
 /menu — главное меню
     """
     show_main_menu(message.chat.id, welcome_text)
@@ -434,34 +560,6 @@ def menu_command(message):
 def show_main_menu(chat_id, text="🏠 *Главное меню*"):
     markup = get_main_menu_keyboard()
     bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
-
-@bot.message_handler(commands=['stats'])
-def stats_command(message):
-    user_id = get_user_id(message)
-    if not user_id:
-        bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
-        return
-        
-    saved_count = count_user_words(user_id)
-    stats = get_total_stats(user_id)
-    
-    total_correct = stats['correct']
-    total_wrong = stats['wrong']
-    total_attempts = total_correct + total_wrong
-
-    stats_text = f"📊 *Твоя статистика*\n\n"
-    stats_text += f"📚 Сохранено слов: *{saved_count}*\n"
-    stats_text += f"✅ Правильных ответов: *{total_correct}*\n"
-    stats_text += f"❌ Неправильных: *{total_wrong}*\n"
-
-    if total_attempts > 0:
-        accuracy = (total_correct / total_attempts * 100)
-        stats_text += f"🎯 Точность: *{accuracy:.1f}%*\n"
-
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
-
-    bot.send_message(message.chat.id, stats_text, parse_mode='Markdown', reply_markup=markup)
 
 @bot.message_handler(commands=['random'])
 def random_word_command(message):
@@ -559,6 +657,98 @@ def practice_choice(message):
 
     bot.send_message(message.chat.id, "🎯 *Выбери режим тренировки*", parse_mode='Markdown', reply_markup=markup)
 
+@bot.message_handler(commands=['notify'])
+def notify_command(message):
+    """Настройка уведомлений с отображением текущего статуса"""
+    user_id = get_user_id(message)
+    
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT notifications, notify_time FROM user_settings WHERE user_id = ?', (user_id,))
+    settings = cursor.fetchone()
+    conn.close()
+    
+    status = "❌ Выключены"
+    times = "10:00, 15:00, 20:00"
+    
+    if settings:
+        if settings[0] == 1:
+            status = "✅ Включены"
+        times = settings[1].replace(',', ', ')
+    
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Включить" if status == "❌ Выключены" else "🔄 Перезапустить", 
+                                          callback_data="notify_on"),
+        telebot.types.InlineKeyboardButton("❌ Выключить", callback_data="notify_off"),
+        telebot.types.InlineKeyboardButton("⏰ Установить время", callback_data="notify_set_time"),
+        telebot.types.InlineKeyboardButton("📋 Мои настройки", callback_data="notify_show"),
+        telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+    )
+    
+    status_text = f"""
+🔔 *Настройка уведомлений*
+
+📊 *Текущий статус:* {status}
+⏱ *Время отправки:* {times}
+
+Уведомления приходят каждый день в указанное время.
+Каждый раз новое слово, которое ты ещё не видел сегодня.
+Когда все слова заканчиваются - цикл повторяется.
+"""
+    
+    bot.send_message(
+        message.chat.id,
+        status_text,
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+@bot.message_handler(commands=['exam'])
+def exam_command(message):
+    """Начинает режим экзамена"""
+    user_id = get_user_id(message)
+    
+    saved_words = get_user_words(user_id)
+    
+    if len(saved_words) < 5:
+        bot.send_message(
+            message.chat.id,
+            "📭 Для экзамена нужно минимум 5 сохранённых слов.\n"
+            "Сохраняй слова через /random и возвращайся!"
+        )
+        return
+    
+    exam_session = {
+        'words': saved_words.copy(),
+        'current': 0,
+        'correct': 0,
+        'wrong': 0,
+        'answers': [],
+        'start_time': time.time()
+    }
+    
+    random.shuffle(exam_session['words'])
+    exam_session['words'] = exam_session['words'][:10]
+    exam_session['total'] = len(exam_session['words'])
+    
+    user_states[f"exam_{user_id}"] = exam_session
+    
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(telebot.types.InlineKeyboardButton("🎯 Начать экзамен", callback_data="exam_start"))
+    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+    
+    bot.send_message(
+        message.chat.id,
+        f"📝 *Экзамен*\n\n"
+        f"Всего слов: {exam_session['total']}\n"
+        f"Вопросы: перевод слова\n"
+        f"Время: не ограничено\n\n"
+        f"Готов начать?",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
 def start_practice_session(user_id, mode, chat_id):
     """Начинает сессию тренировки"""
     user_states[user_id] = {"mode": mode, "in_session": True, "last_word_id": None}
@@ -620,54 +810,86 @@ def start_practice_session(user_id, mode, chat_id):
 
     bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
 
-# ----- ОБРАБОТЧИКИ ТЕКСТА (ПОИСК) -----
-@bot.message_handler(func=lambda m: True)
-def handle_text(message):
-    if message.text.startswith('/'):
+@bot.message_handler(func=lambda message: message.text and user_states.get(f"notify_time_{get_user_id(message)}", {}).get("step") == "waiting")
+def handle_time_input(message):
+    """Обрабатывает ввод времени пользователем для уведомлений"""
+    user_id = get_user_id(message)
+    chat_id = message.chat.id
+    
+    print(f"⏰ Получен ввод времени от {user_id}: {message.text}")  # Отладка
+    
+    time_text = message.text.strip()
+    
+    # Удаляем состояние
+    if f"notify_time_{user_id}" in user_states:
+        del user_states[f"notify_time_{user_id}"]
+    
+    # Валидация
+    time_parts = time_text.split(',')
+    valid_times = []
+    invalid_times = []
+    
+    for part in time_parts:
+        t = part.strip()
+        try:
+            if len(t) == 5 and t[2] == ':':
+                hour = int(t[0:2])
+                minute = int(t[3:5])
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    valid_times.append(t)
+                else:
+                    invalid_times.append(t)
+            else:
+                invalid_times.append(t)
+        except:
+            invalid_times.append(t)
+    
+    if not valid_times:
+        bot.reply_to(
+            message,
+            f"❌ Неправильный формат времени: '{time_text}'\n\n"
+            "Используй формат ЧЧ:ММ, например: 09:00, 15:30, 20:00\n"
+            "Попробуй ещё раз через /notify"
+        )
         return
-        
-    word_text = message.text.strip().lower()
-
+    
+    if invalid_times:
+        warning = f"⚠️ Некоторые значения пропущены (неверный формат): {', '.join(invalid_times)}\n\n"
+    else:
+        warning = ""
+    
+    time_string = ', '.join(valid_times)
+    
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM words WHERE LOWER(word) = ?', (word_text,))
-    word_data = cursor.fetchone()
+    
+    cursor.execute('''
+        INSERT INTO user_settings (user_id, notifications, notify_time)
+        VALUES (?, 1, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            notifications = 1,
+            notify_time = ?
+    ''', (user_id, time_string, time_string))
+    
+    conn.commit()
     conn.close()
+    
+    success_text = f"""
+✅ *Время сохранено!*
 
-    if word_data:
-        user_id = get_user_id(message)
-        if not user_id:
-            bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
-            return
-            
-        conn = sqlite3.connect('words.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word_data[0]))
-        is_saved = cursor.fetchone() is not None
-        conn.close()
-        
-        word = {
-            'id': word_data[0],
-            'word': word_data[1],
-            'translation': word_data[2],
-            'example': word_data[3],
-            'example_translation': word_data[4],
-            'synonyms': word_data[5],
-            'part_of_speech': word_data[6]
-        }
-        card = format_word_card(word, user_id=user_id)
+{warning}📅 Твои уведомления будут приходить в:
+{', '.join(valid_times)}
 
-        markup = get_unified_keyboard(
-            word_id=word['id'],
-            mode="search",
-            is_saved=is_saved
-        )
+🔔 Статус: *Включены*
 
-        bot.send_message(message.chat.id, card, parse_mode='Markdown', reply_markup=markup)
-    else:
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
-        bot.send_message(message.chat.id, f"😕 Не знаю слова '{message.text}'. Попробуй другое или зайди в меню.", reply_markup=markup)
+Используй /notify для просмотра настроек
+"""
+    
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(telebot.types.InlineKeyboardButton("🔔 Посмотреть настройки", callback_data="notify_show"))
+    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+    
+    bot.reply_to(message, success_text, parse_mode='Markdown', reply_markup=markup)
 
 # ----- ОБРАБОТЧИКИ КНОПОК -----
 @bot.callback_query_handler(func=lambda call: True)
@@ -736,7 +958,7 @@ def handle_callback(call):
         practice_choice(fake_msg)
         return
     
-    if call.data == "menu_stats":
+    if call.data == "menu_notify":
         try:
             bot.delete_message(chat_id, message_id)
         except:
@@ -748,7 +970,214 @@ def handle_callback(call):
                 self.message_id = msg_id
         
         fake_msg = SimpleMessage(chat_id, user_id, message_id)
-        stats_command(fake_msg)
+        notify_command(fake_msg)
+        return
+    
+    if call.data == "menu_exam":
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        class SimpleMessage:
+            def __init__(self, chat_id, user_id, msg_id=0):
+                self.chat = type('obj', (object,), {'id': chat_id})
+                self.from_user = type('obj', (object,), {'id': user_id})
+                self.message_id = msg_id
+        
+        fake_msg = SimpleMessage(chat_id, user_id, message_id)
+        exam_command(fake_msg)
+        return
+
+    # ===== УВЕДОМЛЕНИЯ =====
+    if call.data == "notify_on":
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO user_settings (user_id, notifications, notify_time)
+            VALUES (?, 1, '10:00,15:00,20:00')
+            ON CONFLICT(user_id) DO UPDATE SET
+                notifications = 1
+        ''', (user_id,))
+        conn.commit()
+        conn.close()
+        
+        bot.answer_callback_query(call.id, "✅ Уведомления включены!")
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        show_main_menu(chat_id)
+        return
+    
+    if call.data == "notify_off":
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('UPDATE user_settings SET notifications = 0 WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        
+        bot.answer_callback_query(call.id, "✅ Уведомления выключены")
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        show_main_menu(chat_id)
+        return
+    
+    if call.data == "notify_show":
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT notifications, notify_time, last_notification FROM user_settings WHERE user_id = ?', (user_id,))
+        settings = cursor.fetchone()
+        
+        today = time.strftime('%Y-%m-%d')
+        cursor.execute('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND sent_date = ?', (user_id, today))
+        sent_today = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM words')
+        total_words = cursor.fetchone()[0]
+        conn.close()
+        
+        if not settings:
+            bot.answer_callback_query(call.id, "Настройки не найдены")
+            return
+        
+        status = "✅ Включены" if settings[0] == 1 else "❌ Выключены"
+        times = settings[1].replace(',', ', ')
+        last = settings[2] if settings[2] else "никогда"
+        
+        detail_text = f"""
+📋 *Детальные настройки*
+
+🔔 *Статус:* {status}
+⏰ *Время отправки:* {times}
+📅 *Последнее уведомление:* {last}
+📊 *Отправлено сегодня:* {sent_today} слов
+📚 *Всего слов в словаре:* {total_words}
+
+Каждый день ты получаешь новые слова, пока не увидишь все.
+После этого цикл повторяется заново.
+"""
+        
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="notify_back"))
+        
+        try:
+            bot.edit_message_text(detail_text, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+        except:
+            bot.send_message(chat_id, detail_text, parse_mode='Markdown', reply_markup=markup)
+        
+        bot.answer_callback_query(call.id)
+        return
+    
+    if call.data == "notify_set_time":
+        # Устанавливаем состояние ожидания ввода времени
+        user_states[f"notify_time_{user_id}"] = {"step": "waiting"}
+        
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT notify_time FROM user_settings WHERE user_id = ?', (user_id,))
+        settings = cursor.fetchone()
+        conn.close()
+        
+        current_times = settings[0] if settings else "10:00, 15:00, 20:00"
+        
+        instruction_text = f"""
+    ⏰ *Настройка времени уведомлений*
+
+    📝 *Текущее время:* {current_times.replace(',', ', ')}
+
+    *Как настроить:*
+    1. Введи время в формате ЧЧ:ММ
+    2. Можно указать несколько через запятую
+    3. Например: `09:00, 14:30, 20:00`
+
+    ⚠️ *Важно:* время указывай в 24-часовом формате
+    📱 Примеры:
+    • `08:00` - одно уведомление в день
+    • `10:00, 18:00` - два уведомления
+    • `09:30, 14:00, 20:30` - три уведомления
+
+    Отправь время в чат или нажми Отмена
+    """
+        
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("❌ Отмена", callback_data="notify_back"))
+        
+        try:
+            bot.edit_message_text(instruction_text, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+        except:
+            bot.send_message(chat_id, instruction_text, parse_mode='Markdown', reply_markup=markup)
+        
+        bot.answer_callback_query(call.id)
+        return
+    
+    if call.data == "notify_back":
+        if f"notify_time_{user_id}" in user_states:
+            del user_states[f"notify_time_{user_id}"]
+        
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        
+        class SimpleMessage:
+            def __init__(self, chat_id, user_id):
+                self.chat = type('obj', (object,), {'id': chat_id})
+                self.from_user = type('obj', (object,), {'id': user_id})
+        
+        fake_msg = SimpleMessage(chat_id, user_id)
+        notify_command(fake_msg)
+        return
+
+    # ===== ЭКЗАМЕН =====
+    if call.data == "exam_start":
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        send_exam_question(chat_id, user_id)
+        return
+    
+    if call.data.startswith("exam_answer_"):
+        parts = call.data.split("_")
+        word_id = int(parts[2])
+        is_correct = parts[3] == "True"
+        
+        session = user_states.get(f"exam_{user_id}")
+        
+        if session:
+            if is_correct:
+                session['correct'] += 1
+            else:
+                session['wrong'] += 1
+            
+            session['current'] += 1
+            
+            try:
+                bot.delete_message(chat_id, message_id)
+            except:
+                pass
+            
+            if session['current'] >= session['total']:
+                finish_exam(chat_id, user_id)
+            else:
+                send_exam_question(chat_id, user_id)
+        return
+    
+    if call.data == "exam_again":
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        class SimpleMessage:
+            def __init__(self, chat_id, user_id, msg_id=0):
+                self.chat = type('obj', (object,), {'id': chat_id})
+                self.from_user = type('obj', (object,), {'id': user_id})
+                self.message_id = msg_id
+        
+        fake_msg = SimpleMessage(chat_id, user_id, message_id)
+        exam_command(fake_msg)
         return
 
     # ===== СПИСОК СЛОВ =====
@@ -955,7 +1384,6 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "❌ Неправильно! Попробуй другой вариант.", show_alert=True)
             return
 
-        update_word_stats(user_id, word_id, True)
         bot.answer_callback_query(call.id, "✅ Правильно!")
 
         conn = sqlite3.connect('words.db')
@@ -997,8 +1425,6 @@ def handle_callback(call):
     # ===== ПОКАЗАТЬ ОТВЕТ =====
     if call.data.startswith("practice_show_"):
         word_id = int(call.data.split("_")[2])
-        
-        update_word_stats(user_id, word_id, False)
 
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
@@ -1038,6 +1464,54 @@ def handle_callback(call):
                 bot.send_message(chat_id, f"👀 *Правильный ответ:*\n\n{card}", parse_mode='Markdown', reply_markup=markup)
         return
 
+@bot.message_handler(func=lambda m: True)
+def handle_text(message):
+    if message.text.startswith('/'):
+        return
+        
+    word_text = message.text.strip().lower()
+
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM words WHERE LOWER(word) = ?', (word_text,))
+    word_data = cursor.fetchone()
+    conn.close()
+
+    if word_data:
+        user_id = get_user_id(message)
+        if not user_id:
+            bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
+            return
+            
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word_data[0]))
+        is_saved = cursor.fetchone() is not None
+        conn.close()
+        
+        word = {
+            'id': word_data[0],
+            'word': word_data[1],
+            'translation': word_data[2],
+            'example': word_data[3],
+            'example_translation': word_data[4],
+            'synonyms': word_data[5],
+            'part_of_speech': word_data[6]
+        }
+        card = format_word_card(word, user_id=user_id)
+
+        markup = get_unified_keyboard(
+            word_id=word['id'],
+            mode="search",
+            is_saved=is_saved
+        )
+
+        bot.send_message(message.chat.id, card, parse_mode='Markdown', reply_markup=markup)
+    else:
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+        bot.send_message(message.chat.id, f"😕 Не знаю слова '{message.text}'. Попробуй другое или зайди в меню.", reply_markup=markup)
+        
 # ----- ЗАПУСК БОТА -----
 def run_bot():
     """Запускает бота"""
@@ -1063,6 +1537,10 @@ if __name__ == "__main__":
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
         print("✅ Бот запущен")
+
+        scheduler_thread = threading.Thread(target=start_scheduler, daemon=True)
+        scheduler_thread.start()
+        print("✅ Планировщик уведомлений запущен")
 
         port = int(os.environ.get('PORT', 10000))
         print(f"🚀 Запускаем Flask на порту {port}...")
