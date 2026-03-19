@@ -14,6 +14,7 @@ from requests.exceptions import ReadTimeout, ConnectionError
 from flask import Flask
 import schedule
 from datetime import datetime
+import pytz
 
 # Настройка логирования
 logging.basicConfig(
@@ -83,7 +84,7 @@ def init_database():
             part_of_speech TEXT
         )
     ''')
-
+    
     # Таблица для пользователей и их сохраненных слов
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_words (
@@ -111,6 +112,7 @@ def init_database():
             user_id INTEGER PRIMARY KEY,
             notifications INTEGER DEFAULT 0,
             notify_time TEXT DEFAULT '10:00,15:00,20:00',
+            timezone TEXT DEFAULT 'UTC',
             last_notification DATE
         )
     ''')
@@ -399,23 +401,29 @@ def should_notify_now(user_id, current_time):
     return False
 
 def send_scheduled_words():
-    """Отправляет слова всем пользователям по расписанию"""
+    """Отправляет слова всем пользователям с учётом их часового пояса"""
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     
-    cursor.execute('SELECT user_id FROM user_settings WHERE notifications = 1')
+    cursor.execute('SELECT user_id, notify_time, timezone FROM user_settings WHERE notifications = 1')
     users = cursor.fetchall()
     conn.close()
     
-    # Текущее время с минутами!
-    current_time = datetime.now().strftime('%H:%M')
+    # Время на сервере (UTC)
+    server_time = datetime.now(pytz.UTC)
     
-    print(f"⏰ Проверка уведомлений в {current_time}")  # Отладка
-    
-    for (user_id,) in users:
+    for (user_id, notify_time, tz_name) in users:
         try:
-            if should_notify_now(user_id, current_time):
-                print(f"📨 Отправка пользователю {user_id} в {current_time}")
+            # Получаем часовой пояс пользователя
+            if tz_name and tz_name != 'UTC':
+                tz = pytz.timezone(tz_name)
+                user_time = server_time.astimezone(tz).strftime('%H:%M')
+            else:
+                user_time = server_time.strftime('%H:%M')
+            
+            print(f"👤 {user_id}: сервер {server_time.strftime('%H:%M')} UTC, пользователь {user_time} {tz_name}")
+            
+            if notify_time and user_time in [t.strip() for t in notify_time.split(',')]:
                 word = get_unseen_word(user_id)
                 if word:
                     card = format_word_card(word, user_id=user_id)
@@ -441,11 +449,10 @@ def send_scheduled_words():
                     conn.commit()
                     conn.close()
         except Exception as e:
-            print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+            print(f"❌ Ошибка для {user_id}: {e}")
 
 def check_and_send():
     """Проверяет текущее время и отправляет уведомления (каждую минуту)"""
-    # Убираем проверку :00 - отправляем всегда
     threading.Thread(target=send_scheduled_words).start()
 
 def start_scheduler():
@@ -530,6 +537,77 @@ def finish_exam(chat_id, user_id):
         del user_states[f"exam_{user_id}"]
 
 # ----- ОБРАБОТЧИКИ КОМАНД -----
+def show_notify_settings(chat_id, user_id, edit_message_id=None):
+    """Показывает настройки уведомлений"""
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT notifications, notify_time, timezone FROM user_settings WHERE user_id = ?', (user_id,))
+    settings = cursor.fetchone()
+    conn.close()
+    
+    status = "❌ Выключены"
+    times = "10:00, 15:00, 20:00"
+    tz = "UTC"
+    
+    if settings:
+        if settings[0] == 1:
+            status = "✅ Включены"
+        times = settings[1].replace(',', ', ')
+        tz = settings[2] if settings[2] else "UTC"
+    
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Включить" if status == "❌ Выключены" else "🔄 Включены", 
+                                          callback_data="notify_on"),
+        telebot.types.InlineKeyboardButton("❌ Выключить", callback_data="notify_off"),
+        telebot.types.InlineKeyboardButton("⏰ Установить время", callback_data="notify_set_time"),
+        telebot.types.InlineKeyboardButton("🌍 Часовой пояс", callback_data="notify_timezone"),
+        telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+    )
+    
+    status_text = f"""
+🔔 *Настройка уведомлений*
+
+📊 *Текущий статус:* {status}
+⏱ *Время отправки:* {times}
+🌍 *Часовой пояс:* {tz}
+
+Уведомления приходят каждый день в указанное время.
+Каждый раз новое слово, которое ты ещё не видел сегодня.
+Когда все слова заканчиваются - цикл повторяется.
+"""
+    
+    if edit_message_id:
+        try:
+            bot.edit_message_text(status_text, chat_id, edit_message_id, parse_mode='Markdown', reply_markup=markup)
+        except:
+            bot.send_message(chat_id, status_text, parse_mode='Markdown', reply_markup=markup)
+    else:
+        bot.send_message(chat_id, status_text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.message_handler(commands=['timezone'])
+def timezone_command(message):
+    """Настройка часового пояса"""
+    user_id = get_user_id(message)
+    
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        telebot.types.InlineKeyboardButton("🇷🇺 Москва (MSK, UTC+3)", callback_data="tz_Europe/Moscow"),
+        telebot.types.InlineKeyboardButton("🇬🇧 Лондон (UTC)", callback_data="tz_Europe/London"),
+        telebot.types.InlineKeyboardButton("🇪🇺 Берлин (CET, UTC+1)", callback_data="tz_Europe/Berlin"),
+        telebot.types.InlineKeyboardButton("🇺🇸 Нью-Йорк (EST, UTC-5)", callback_data="tz_America/New_York"),
+        telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="notify_back")
+    )
+    
+    bot.send_message(
+        message.chat.id,
+        "🌍 *Настройка часового пояса*\n\n"
+        "Выбери свой часовой пояс, чтобы уведомления приходили в правильное время.\n"
+        "Сейчас у тебя UTC (Лондон), поэтому уведомления приходят на 3 часа позже.",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+    
 @bot.message_handler(commands=['start'])
 def start_command(message):
     """Приветственное сообщение"""
@@ -659,48 +737,9 @@ def practice_choice(message):
 
 @bot.message_handler(commands=['notify'])
 def notify_command(message):
-    """Настройка уведомлений с отображением текущего статуса"""
+    """Настройка уведомлений"""
     user_id = get_user_id(message)
-    
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT notifications, notify_time FROM user_settings WHERE user_id = ?', (user_id,))
-    settings = cursor.fetchone()
-    conn.close()
-    
-    status = "❌ Выключены"
-    times = "10:00, 15:00, 20:00"
-    
-    if settings:
-        if settings[0] == 1:
-            status = "✅ Включены"
-        times = settings[1].replace(',', ', ')
-    
-    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        telebot.types.InlineKeyboardButton("✅ Включить", callback_data="notify_on"),
-        telebot.types.InlineKeyboardButton("❌ Выключить", callback_data="notify_off"),
-        telebot.types.InlineKeyboardButton("⏰ Установить время", callback_data="notify_set_time"),
-        telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-    )
-    
-    status_text = f"""
-🔔 *Настройка уведомлений*
-
-📊 *Текущий статус:* {status}
-⏱ *Время отправки:* {times}
-
-Уведомления приходят каждый день в указанное время.
-Каждый раз новое слово, которое ты ещё не видел сегодня.
-Когда все слова заканчиваются - цикл повторяется.
-"""
-    
-    bot.send_message(
-        message.chat.id,
-        status_text,
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
+    show_notify_settings(message.chat.id, user_id)
 
 @bot.message_handler(commands=['exam'])
 def exam_command(message):
@@ -814,15 +853,13 @@ def handle_time_input(message):
     user_id = get_user_id(message)
     chat_id = message.chat.id
     
-    print(f"⏰ Получен ввод времени от {user_id}: {message.text}")  # Отладка
+    print(f"⏰ Получен ввод времени от {user_id}: {message.text}")
     
     time_text = message.text.strip()
     
-    # Удаляем состояние
     if f"notify_time_{user_id}" in user_states:
         del user_states[f"notify_time_{user_id}"]
     
-    # Валидация
     time_parts = time_text.split(',')
     valid_times = []
     invalid_times = []
@@ -872,22 +909,8 @@ def handle_time_input(message):
     conn.commit()
     conn.close()
     
-    success_text = f"""
-✅ *Время сохранено!*
-
-{warning}📅 Твои уведомления будут приходить в:
-{', '.join(valid_times)}
-
-🔔 Статус: *Включены*
-
-Используй /notify для просмотра настроек
-"""
-    
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("🔔 Посмотреть настройки", callback_data="notify_show"))
-    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
-    
-    bot.reply_to(message, success_text, parse_mode='Markdown', reply_markup=markup)
+    # Показываем обновленные настройки
+    show_notify_settings(chat_id, user_id)
 
 # ----- ОБРАБОТЧИКИ КНОПОК -----
 @bot.callback_query_handler(func=lambda call: True)
@@ -961,14 +984,7 @@ def handle_callback(call):
             bot.delete_message(chat_id, message_id)
         except:
             pass
-        class SimpleMessage:
-            def __init__(self, chat_id, user_id, msg_id=0):
-                self.chat = type('obj', (object,), {'id': chat_id})
-                self.from_user = type('obj', (object,), {'id': user_id})
-                self.message_id = msg_id
-        
-        fake_msg = SimpleMessage(chat_id, user_id, message_id)
-        notify_command(fake_msg)
+        show_notify_settings(chat_id, user_id)
         return
     
     if call.data == "menu_exam":
@@ -991,8 +1007,8 @@ def handle_callback(call):
         conn = sqlite3.connect('words.db')
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO user_settings (user_id, notifications, notify_time)
-            VALUES (?, 1, '10:00,15:00,20:00')
+            INSERT INTO user_settings (user_id, notifications, notify_time, timezone)
+            VALUES (?, 1, '10:00,15:00,20:00', 'UTC')
             ON CONFLICT(user_id) DO UPDATE SET
                 notifications = 1
         ''', (user_id,))
@@ -1000,11 +1016,7 @@ def handle_callback(call):
         conn.close()
         
         bot.answer_callback_query(call.id, "✅ Уведомления включены!")
-        try:
-            bot.delete_message(chat_id, message_id)
-        except:
-            pass
-        show_main_menu(chat_id)
+        show_notify_settings(chat_id, user_id, message_id)
         return
     
     if call.data == "notify_off":
@@ -1015,11 +1027,7 @@ def handle_callback(call):
         conn.close()
         
         bot.answer_callback_query(call.id, "✅ Уведомления выключены")
-        try:
-            bot.delete_message(chat_id, message_id)
-        except:
-            pass
-        show_main_menu(chat_id)
+        show_notify_settings(chat_id, user_id, message_id)
         return
     
     if call.data == "notify_set_time":
@@ -1035,23 +1043,23 @@ def handle_callback(call):
         current_times = settings[0] if settings else "10:00, 15:00, 20:00"
         
         instruction_text = f"""
-    ⏰ *Настройка времени уведомлений*
+⏰ *Настройка времени уведомлений*
 
-    📝 *Текущее время:* {current_times.replace(',', ', ')}
+📝 *Текущее время:* {current_times.replace(',', ', ')}
 
-    *Как настроить:*
-    1. Введи время в формате ЧЧ:ММ
-    2. Можно указать несколько через запятую
-    3. Например: `09:00, 14:30, 20:00`
+*Как настроить:*
+1. Введи время в формате ЧЧ:ММ
+2. Можно указать несколько через запятую
+3. Например: `09:00, 14:30, 20:00`
 
-    ⚠️ *Важно:* время указывай в 24-часовом формате
-    📱 Примеры:
-    • `08:00` - одно уведомление в день
-    • `10:00, 18:00` - два уведомления
-    • `09:30, 14:00, 20:30` - три уведомления
+⚠️ *Важно:* время указывай в 24-часовом формате
+📱 Примеры:
+• `08:00` - одно уведомление в день
+• `10:00, 18:00` - два уведомления
+• `09:30, 14:00, 20:30` - три уведомления
 
-    Отправь время в чат или нажми Отмена
-    """
+Отправь время в чат или нажми Отмена
+"""
         
         markup = telebot.types.InlineKeyboardMarkup()
         markup.add(telebot.types.InlineKeyboardButton("❌ Отмена", callback_data="notify_back"))
@@ -1064,22 +1072,60 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
+    if call.data == "notify_timezone":
+        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            telebot.types.InlineKeyboardButton("🇷🇺 Москва (MSK, UTC+3)", callback_data="tz_Europe/Moscow"),
+            telebot.types.InlineKeyboardButton("🇬🇧 Лондон (UTC)", callback_data="tz_Europe/London"),
+            telebot.types.InlineKeyboardButton("🇪🇺 Берлин (CET, UTC+1)", callback_data="tz_Europe/Berlin"),
+            telebot.types.InlineKeyboardButton("🇺🇸 Нью-Йорк (EST, UTC-5)", callback_data="tz_America/New_York"),
+            telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="notify_back")
+        )
+        
+        try:
+            bot.edit_message_text(
+                "🌍 *Настройка часового пояса*\n\n"
+                "Выбери свой часовой пояс, чтобы уведомления приходили в правильное время.\n"
+                "Сейчас у тебя UTC (Лондон), поэтому уведомления приходят на 3 часа позже.",
+                chat_id,
+                message_id,
+                parse_mode='Markdown',
+                reply_markup=markup
+            )
+        except:
+            bot.send_message(
+                chat_id,
+                "🌍 *Настройка часового пояса*\n\n"
+                "Выбери свой часовой пояс, чтобы уведомления приходили в правильное время.\n"
+                "Сейчас у тебя UTC (Лондон), поэтому уведомления приходят на 3 часа позже.",
+                parse_mode='Markdown',
+                reply_markup=markup
+            )
+        bot.answer_callback_query(call.id)
+        return
+    
+    if call.data.startswith("tz_"):
+        tz_name = call.data[3:]
+        
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE user_settings SET timezone = ? WHERE user_id = ?
+        ''', (tz_name, user_id))
+        conn.commit()
+        conn.close()
+        
+        bot.answer_callback_query(call.id, f"✅ Часовой пояс установлен: {tz_name}")
+        
+        # Возвращаемся в меню уведомлений
+        show_notify_settings(chat_id, user_id, message_id)
+        return
+    
     if call.data == "notify_back":
         if f"notify_time_{user_id}" in user_states:
             del user_states[f"notify_time_{user_id}"]
         
-        try:
-            bot.delete_message(chat_id, message_id)
-        except:
-            pass
-        
-        class SimpleMessage:
-            def __init__(self, chat_id, user_id):
-                self.chat = type('obj', (object,), {'id': chat_id})
-                self.from_user = type('obj', (object,), {'id': user_id})
-        
-        fake_msg = SimpleMessage(chat_id, user_id)
-        notify_command(fake_msg)
+        show_notify_settings(chat_id, user_id, message_id)
         return
 
     # ===== ЭКЗАМЕН =====
