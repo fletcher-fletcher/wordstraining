@@ -5,6 +5,7 @@ import os
 import threading
 import io
 import time
+import json
 from dotenv import load_dotenv
 from words_data import words_database
 from gtts import gTTS
@@ -15,6 +16,8 @@ from flask import Flask
 import schedule
 from datetime import datetime
 import pytz
+import requests
+import groq
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,11 +29,110 @@ logger = logging.getLogger(__name__)
 # Загружаем токен
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+UNSPLASH_ACCESS_KEY = os.getenv('UNSPLASH_ACCESS_KEY')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN не найден в .env файле!")
     exit(1)
 
+# OpenRouter API настройки
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+def get_image_for_word(word):
+    """Ищет картинку по слову в Unsplash"""
+    if not UNSPLASH_ACCESS_KEY:
+        return None
+    
+    try:
+        url = "https://api.unsplash.com/search/photos"
+        params = {
+            "query": word,
+            "per_page": 1,
+            "orientation": "landscape"
+        }
+        headers = {
+            "Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('results') and len(data['results']) > 0:
+                return data['results'][0]['urls']['regular']
+        return None
+    except Exception as e:
+        print(f"Ошибка при поиске картинки для {word}: {e}")
+        return None
+
+# Инициализация GROQ клиента
+groq_client = groq.Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+def get_word_from_ai(word):
+    """Получает информацию о слове из GROQ AI (бесплатно и быстро)"""
+    if not GROQ_API_KEY or not groq_client:
+        print("❌ GROQ API ключ не настроен")
+        return None
+    
+    prompt = f"""Ты помогаешь с английскими словами. Отвечай строго в формате JSON без лишнего текста.
+Если слово не английское или не существует, верни {{"error": "unknown"}}.
+
+Пример ответа для слова "hello":
+{{
+    "word": "hello",
+    "translation": "привет",
+    "example": "Hello, how are you?",
+    "example_translation": "Привет, как дела?",
+    "synonyms": "hi, greetings",
+    "part_of_speech": "interjection"
+}}
+
+Теперь ответь для слова: {word}
+"""
+    
+    try:
+        print(f"🤖 Отправка запроса к GROQ для слова: {word}")
+        
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",  # мощная бесплатная модель
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5,
+            max_tokens=500
+        )
+        
+        content = completion.choices[0].message.content
+        
+        # Извлекаем JSON из ответа
+        content = content.strip()
+        if content.startswith('```json'):
+            content = content[7:]
+        if content.startswith('```'):
+            content = content[3:]
+        if content.endswith('```'):
+            content = content[:-3]
+        content = content.strip()
+        
+        ai_data = json.loads(content)
+        
+        if ai_data.get('error'):
+            print(f"❌ AI вернул ошибку: {ai_data.get('error')}")
+            return None
+            
+        return {
+            'word': ai_data.get('word', word),
+            'translation': ai_data.get('translation', ''),
+            'example': ai_data.get('example', ''),
+            'example_translation': ai_data.get('example_translation', ''),
+            'synonyms': ai_data.get('synonyms', ''),
+            'part_of_speech': ai_data.get('part_of_speech', 'unknown')
+        }
+    except Exception as e:
+        print(f"❌ Ошибка GROQ: {e}")
+        return None
+        
 # СОЗДАЕМ БОТА
 bot = telebot.TeleBot(BOT_TOKEN)
 bot.timeout = 30
@@ -332,7 +434,8 @@ def format_word_card(word, user_id=None):
     card += f"📌 *Пример:*\n"
     card += f"{word['example']}\n"
     card += f"_{word['example_translation']}_\n\n"
-    card += f"🔗 *Синонимы:* {word['synonyms']}"
+    if word['synonyms']:
+        card += f"🔗 *Синонимы:* {word['synonyms']}"
 
     return card
 
@@ -396,7 +499,6 @@ def should_notify_now(user_id, current_time):
     
     if result and result[0]:
         times = result[0].split(',')
-        # Сравниваем точное время ЧЧ:ММ
         return current_time in [t.strip() for t in times]
     return False
 
@@ -409,19 +511,15 @@ def send_scheduled_words():
     users = cursor.fetchall()
     conn.close()
     
-    # Время на сервере (UTC)
     server_time = datetime.now(pytz.UTC)
     
     for (user_id, notify_time, tz_name) in users:
         try:
-            # Получаем часовой пояс пользователя
             if tz_name and tz_name != 'UTC':
                 tz = pytz.timezone(tz_name)
                 user_time = server_time.astimezone(tz).strftime('%H:%M')
             else:
                 user_time = server_time.strftime('%H:%M')
-            
-            print(f"👤 {user_id}: сервер {server_time.strftime('%H:%M')} UTC, пользователь {user_time} {tz_name}")
             
             if notify_time and user_time in [t.strip() for t in notify_time.split(',')]:
                 word = get_unseen_word(user_id)
@@ -537,6 +635,28 @@ def finish_exam(chat_id, user_id):
         del user_states[f"exam_{user_id}"]
 
 # ----- ОБРАБОТЧИКИ КОМАНД -----
+
+@bot.message_handler(commands=['test_ai'])
+def test_ai_command(message):
+    """Тест API OpenRouter"""
+    status_msg = bot.reply_to(message, "🔍 Тестирую подключение к OpenRouter...")
+    
+    test_word = "hello"
+    result = get_word_from_ai(test_word)
+    
+    if result:
+        bot.edit_message_text(
+            f"✅ AI работает!\n\nСлово: {result['word']}\nПеревод: {result['translation']}",
+            message.chat.id,
+            status_msg.message_id
+        )
+    else:
+        bot.edit_message_text(
+            "❌ AI не отвечает. Проверь API ключ.",
+            message.chat.id,
+            status_msg.message_id
+        )
+        
 def show_notify_settings(chat_id, user_id, edit_message_id=None):
     """Показывает настройки уведомлений"""
     conn = sqlite3.connect('words.db')
@@ -664,7 +784,23 @@ def send_random_word(chat_id, user_id):
             mode="random",
             is_saved=is_saved
         )
-        bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
+        
+        image_url = get_image_for_word(word['word'])
+        
+        if image_url:
+            try:
+                bot.send_photo(
+                    chat_id, 
+                    image_url, 
+                    caption=card, 
+                    parse_mode='Markdown', 
+                    reply_markup=markup
+                )
+            except Exception as e:
+                print(f"Ошибка отправки картинки: {e}")
+                bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
+        else:
+            bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
     else:
         bot.send_message(chat_id, "😕 Что-то пошло не так. Попробуй позже.")
 
@@ -909,7 +1045,6 @@ def handle_time_input(message):
     conn.commit()
     conn.close()
     
-    # Показываем обновленные настройки
     show_notify_settings(chat_id, user_id)
 
 # ----- ОБРАБОТЧИКИ КНОПОК -----
@@ -1031,7 +1166,6 @@ def handle_callback(call):
         return
     
     if call.data == "notify_set_time":
-        # Устанавливаем состояние ожидания ввода времени
         user_states[f"notify_time_{user_id}"] = {"step": "waiting"}
         
         conn = sqlite3.connect('words.db')
@@ -1117,7 +1251,6 @@ def handle_callback(call):
         
         bot.answer_callback_query(call.id, f"✅ Часовой пояс установлен: {tz_name}")
         
-        # Возвращаемся в меню уведомлений
         show_notify_settings(chat_id, user_id, message_id)
         return
     
@@ -1462,6 +1595,7 @@ def handle_callback(call):
                 bot.send_message(chat_id, f"👀 *Правильный ответ:*\n\n{card}", parse_mode='Markdown', reply_markup=markup)
         return
 
+# ----- ОБРАБОТЧИК ТЕКСТА (ПОИСК СЛОВ С AI) -----
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
     if message.text.startswith('/'):
@@ -1469,24 +1603,20 @@ def handle_text(message):
         
     word_text = message.text.strip().lower()
 
+    # Сначала ищем в базе
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM words WHERE LOWER(word) = ?', (word_text,))
     word_data = cursor.fetchone()
     conn.close()
 
+    user_id = get_user_id(message)
+    if not user_id:
+        bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
+        return
+    
+    # Если слово есть в базе
     if word_data:
-        user_id = get_user_id(message)
-        if not user_id:
-            bot.send_message(message.chat.id, "😕 Не удалось определить пользователя")
-            return
-            
-        conn = sqlite3.connect('words.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word_data[0]))
-        is_saved = cursor.fetchone() is not None
-        conn.close()
-        
         word = {
             'id': word_data[0],
             'word': word_data[1],
@@ -1496,20 +1626,127 @@ def handle_text(message):
             'synonyms': word_data[5],
             'part_of_speech': word_data[6]
         }
+        
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word['id']))
+        is_saved = cursor.fetchone() is not None
+        conn.close()
+        
         card = format_word_card(word, user_id=user_id)
-
         markup = get_unified_keyboard(
             word_id=word['id'],
             mode="search",
             is_saved=is_saved
         )
-
         bot.send_message(message.chat.id, card, parse_mode='Markdown', reply_markup=markup)
-    else:
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
-        bot.send_message(message.chat.id, f"😕 Не знаю слова '{message.text}'. Попробуй другое или зайди в меню.", reply_markup=markup)
+        return
+    
+    # Если слова нет в базе — пробуем нейросеть
+    status_msg = bot.send_message(message.chat.id, "🤔 Слова нет в словаре. Ищу через ИИ...")
+    
+    ai_word = get_word_from_ai(word_text)
+    
+    if ai_word:
+        # Автоматически сохраняем в общую базу
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO words 
+            (word, translation, example, example_translation, synonyms, part_of_speech)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            ai_word['word'],
+            ai_word['translation'],
+            ai_word['example'],
+            ai_word['example_translation'],
+            ai_word['synonyms'],
+            ai_word['part_of_speech']
+        ))
+        conn.commit()
         
+        # Получаем ID слова
+        cursor.execute('SELECT id FROM words WHERE word = ?', (ai_word['word'],))
+        word_id = cursor.fetchone()[0]
+        conn.close()
+        
+        card = format_word_card(ai_word, user_id=user_id)
+        
+        markup = get_unified_keyboard(
+            word_id=word_id,
+            mode="search",
+            is_saved=False
+        )
+        
+        bot.edit_message_text(
+            card, 
+            message.chat.id, 
+            status_msg.message_id,
+            parse_mode='Markdown', 
+            reply_markup=markup
+        )
+    else:
+        bot.edit_message_text(
+            f"😕 Не знаю слова '{message.text}'. Попробуй другое или зайди в меню.",
+            message.chat.id,
+            status_msg.message_id
+        )
+
+# ----- ОБРАБОТЧИК СОХРАНЕНИЯ AI СЛОВ -----
+@bot.callback_query_handler(func=lambda call: call.data.startswith("save_ai_"))
+def save_ai_word_callback(call):
+    user_id = get_user_id(call)
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
+    
+    word_text = call.data[7:]  # убираем "save_ai_"
+    
+    ai_word = get_word_from_ai(word_text)
+    
+    if ai_word:
+        # Сохраняем в базу
+        conn = sqlite3.connect('words.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO words 
+            (word, translation, example, example_translation, synonyms, part_of_speech)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            ai_word['word'],
+            ai_word['translation'],
+            ai_word['example'],
+            ai_word['example_translation'],
+            ai_word['synonyms'],
+            ai_word['part_of_speech']
+        ))
+        conn.commit()
+        
+        # Получаем ID нового слова
+        cursor.execute('SELECT id FROM words WHERE word = ?', (ai_word['word'],))
+        word_id = cursor.fetchone()[0]
+        conn.close()
+        
+        # Сохраняем в личный словарь пользователя
+        save_user_word(user_id, word_id)
+        
+        bot.answer_callback_query(call.id, f"✅ Слово '{ai_word['word']}' сохранено в словарь!")
+        
+        # Обновляем карточку
+        card = format_word_card(ai_word, user_id=user_id)
+        markup = get_unified_keyboard(
+            word_id=word_id,
+            mode="search",
+            is_saved=True
+        )
+        
+        try:
+            bot.edit_message_text(card, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+        except:
+            bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
+    else:
+        bot.answer_callback_query(call.id, "❌ Не удалось сохранить слово")
+    return
+
 # ----- ЗАПУСК БОТА -----
 def run_bot():
     """Запускает бота"""
