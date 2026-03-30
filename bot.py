@@ -47,9 +47,11 @@ def get_word_from_ai(word):
     prompt = f"""Ты помогаешь с английскими словами. Отвечай строго в формате JSON без лишнего текста.
 Если слово не английское или не существует, верни {{"error": "unknown"}}.
 
+ВАЖНО: Поле "word" должно начинаться с заглавной буквы (первая буква большая, остальные маленькие).
+
 Пример ответа для слова "hello":
 {{
-    "word": "hello",
+    "word": "Hello",
     "translation": "привет",
     "example": "Hello, how are you?",
     "example_translation": "Привет, как дела?",
@@ -89,9 +91,14 @@ def get_word_from_ai(word):
         if ai_data.get('error'):
             print(f"❌ AI вернул ошибку: {ai_data.get('error')}")
             return None
+        
+        # Если AI всё равно вернул с маленькой буквы — исправляем сами
+        word_result = ai_data.get('word', word)
+        if word_result and len(word_result) > 0:
+            word_result = word_result[0].upper() + word_result[1:] if len(word_result) > 1 else word_result.upper()
             
         return {
-            'word': ai_data.get('word', word),
+            'word': word_result,
             'translation': ai_data.get('translation', ''),
             'example': ai_data.get('example', ''),
             'example_translation': ai_data.get('example_translation', ''),
