@@ -29,42 +29,11 @@ logger = logging.getLogger(__name__)
 # Загружаем токен
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-UNSPLASH_ACCESS_KEY = os.getenv('UNSPLASH_ACCESS_KEY')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN не найден в .env файле!")
     exit(1)
-
-# OpenRouter API настройки
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-def get_image_for_word(word):
-    """Ищет картинку по слову в Unsplash"""
-    if not UNSPLASH_ACCESS_KEY:
-        return None
-    
-    try:
-        url = "https://api.unsplash.com/search/photos"
-        params = {
-            "query": word,
-            "per_page": 1,
-            "orientation": "landscape"
-        }
-        headers = {
-            "Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"
-        }
-        
-        response = requests.get(url, params=params, headers=headers, timeout=5)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('results') and len(data['results']) > 0:
-                return data['results'][0]['urls']['regular']
-        return None
-    except Exception as e:
-        print(f"Ошибка при поиске картинки для {word}: {e}")
-        return None
 
 # Инициализация GROQ клиента
 groq_client = groq.Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -95,7 +64,7 @@ def get_word_from_ai(word):
         print(f"🤖 Отправка запроса к GROQ для слова: {word}")
         
         completion = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",  # мощная бесплатная модель
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "user", "content": prompt}
             ],
@@ -638,8 +607,8 @@ def finish_exam(chat_id, user_id):
 
 @bot.message_handler(commands=['test_ai'])
 def test_ai_command(message):
-    """Тест API OpenRouter"""
-    status_msg = bot.reply_to(message, "🔍 Тестирую подключение к OpenRouter...")
+    """Тест API GROQ"""
+    status_msg = bot.reply_to(message, "🔍 Тестирую подключение к GROQ...")
     
     test_word = "hello"
     result = get_word_from_ai(test_word)
@@ -785,22 +754,7 @@ def send_random_word(chat_id, user_id):
             is_saved=is_saved
         )
         
-        image_url = get_image_for_word(word['word'])
-        
-        if image_url:
-            try:
-                bot.send_photo(
-                    chat_id, 
-                    image_url, 
-                    caption=card, 
-                    parse_mode='Markdown', 
-                    reply_markup=markup
-                )
-            except Exception as e:
-                print(f"Ошибка отправки картинки: {e}")
-                bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
-        else:
-            bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
+        bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
     else:
         bot.send_message(chat_id, "😕 Что-то пошло не так. Попробуй позже.")
 
