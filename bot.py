@@ -1,6 +1,5 @@
 import telebot
 import random
-import sqlite3
 import os
 import threading
 import io
@@ -18,6 +17,7 @@ from datetime import datetime
 import pytz
 import requests
 import groq
+from supabase import create_client, Client
 
 # Настройка логирования
 logging.basicConfig(
@@ -30,16 +30,21 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN не найден в .env файле!")
     exit(1)
 
+# Инициализация Supabase клиента
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+
 # Инициализация GROQ клиента
 groq_client = groq.Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 def get_word_from_ai(word):
-    """Получает информацию о слове из GROQ AI (бесплатно и быстро)"""
+    """Получает информацию о слове из GROQ AI"""
     if not GROQ_API_KEY or not groq_client:
         print("❌ GROQ API ключ не настроен")
         return None
@@ -146,235 +151,207 @@ def health():
 
 # ----- РАБОТА С БАЗОЙ ДАННЫХ -----
 def init_database():
-    """Создает таблицы, если их нет, и заполняет словами"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-
-    # Таблица для слов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS words (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            word TEXT UNIQUE,
-            translation TEXT,
-            example TEXT,
-            example_translation TEXT,
-            synonyms TEXT,
-            part_of_speech TEXT
-        )
-    ''')
+    """Создает таблицы в Supabase, если их нет, и заполняет словами"""
+    if not supabase:
+        logger.error("Supabase не настроен!")
+        return
     
-    # Таблица для пользователей и их сохраненных слов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_words (
-            user_id INTEGER,
-            word_id INTEGER,
-            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            notes TEXT DEFAULT '',
-            PRIMARY KEY (user_id, word_id)
-        )
-    ''')
-
-    # Таблица для уведомлений (история отправленных слов)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS notifications (
-            user_id INTEGER,
-            word_id INTEGER,
-            sent_date DATE,
-            UNIQUE(user_id, word_id, sent_date)
-        )
-    ''')
+    # Создаём таблицы через SQL (выполнить один раз в Supabase SQL Editor)
+    # Вместо автоматического создания, создадим таблицы вручную через SQL Editor Supabase
+    # Вот SQL для создания таблиц:
+    """
+    -- Таблица слов
+    CREATE TABLE IF NOT EXISTS words (
+        id BIGSERIAL PRIMARY KEY,
+        word TEXT UNIQUE NOT NULL,
+        translation TEXT,
+        example TEXT,
+        example_translation TEXT,
+        synonyms TEXT,
+        part_of_speech TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
     
-    # Таблица для настроек пользователей
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_settings (
-            user_id INTEGER PRIMARY KEY,
-            notifications INTEGER DEFAULT 0,
-            notify_time TEXT DEFAULT '10:00,15:00,20:00',
-            timezone TEXT DEFAULT 'UTC',
-            last_notification DATE
-        )
-    ''')
-
-    # Индексы для быстрого поиска
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_words_user_id ON user_words(user_id)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_words_word ON words(word)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_notifications_user_date ON notifications(user_id, sent_date)')
-
-    # Заполняем словами из words_database
-    for word_data in words_database:
-        try:
-            cursor.execute('''
-                INSERT OR IGNORE INTO words
-                (word, translation, example, example_translation, synonyms, part_of_speech)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                word_data['word'],
-                word_data['translation'],
-                word_data['example'],
-                word_data['example_translation'],
-                word_data['synonyms'],
-                word_data['part_of_speech']
-            ))
-        except Exception as e:
-            print(f"Ошибка при добавлении слова {word_data['word']}: {e}")
-
-    conn.commit()
-    conn.close()
-    logger.info("База данных инициализирована")
+    -- Таблица пользовательских слов
+    CREATE TABLE IF NOT EXISTS user_words (
+        user_id BIGINT,
+        word_id BIGINT REFERENCES words(id) ON DELETE CASCADE,
+        added_date TIMESTAMP DEFAULT NOW(),
+        notes TEXT DEFAULT '',
+        PRIMARY KEY (user_id, word_id)
+    );
+    
+    -- Таблица уведомлений
+    CREATE TABLE IF NOT EXISTS notifications (
+        user_id BIGINT,
+        word_id BIGINT REFERENCES words(id) ON DELETE CASCADE,
+        sent_date DATE,
+        UNIQUE(user_id, word_id, sent_date)
+    );
+    
+    -- Таблица настроек пользователей
+    CREATE TABLE IF NOT EXISTS user_settings (
+        user_id BIGINT PRIMARY KEY,
+        notifications INTEGER DEFAULT 0,
+        notify_time TEXT DEFAULT '10:00,15:00,20:00',
+        timezone TEXT DEFAULT 'UTC',
+        last_notification DATE
+    );
+    """
+    
+    # Заполняем словами из words_database (только если таблица пустая)
+    try:
+        response = supabase.table('words').select('count', count='exact').execute()
+        if response.count == 0:
+            for word_data in words_database:
+                try:
+                    supabase.table('words').insert({
+                        'word': word_data['word'],
+                        'translation': word_data['translation'],
+                        'example': word_data['example'],
+                        'example_translation': word_data['example_translation'],
+                        'synonyms': word_data['synonyms'],
+                        'part_of_speech': word_data['part_of_speech']
+                    }).execute()
+                except Exception as e:
+                    print(f"Ошибка при добавлении слова {word_data['word']}: {e}")
+            logger.info("База данных заполнена начальными словами")
+        else:
+            logger.info(f"База данных уже содержит {response.count} слов")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации базы: {e}")
 
 def get_random_word(exclude_id=None):
     """Возвращает случайное слово из базы"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-
-    if exclude_id:
-        cursor.execute('SELECT * FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 1', (exclude_id,))
-    else:
-        cursor.execute('SELECT * FROM words ORDER BY RANDOM() LIMIT 1')
-
-    word = cursor.fetchone()
-    conn.close()
-
-    if word:
-        return {
-            'id': word[0],
-            'word': word[1],
-            'translation': word[2],
-            'example': word[3],
-            'example_translation': word[4],
-            'synonyms': word[5],
-            'part_of_speech': word[6]
-        }
-    return None
+    try:
+        query = supabase.table('words').select('*')
+        if exclude_id:
+            query = query.neq('id', exclude_id)
+        response = query.order('random()').limit(1).execute()
+        
+        if response.data:
+            word = response.data[0]
+            return {
+                'id': word['id'],
+                'word': word['word'],
+                'translation': word['translation'],
+                'example': word['example'],
+                'example_translation': word['example_translation'],
+                'synonyms': word['synonyms'],
+                'part_of_speech': word['part_of_speech']
+            }
+        return None
+    except Exception as e:
+        print(f"Ошибка получения слова: {e}")
+        return None
 
 def get_unseen_word(user_id):
     """Возвращает случайное слово, которое ещё не показывали сегодня"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    
-    today = time.strftime('%Y-%m-%d')
-    
-    # Слова, которые уже показывали сегодня
-    cursor.execute('''
-        SELECT word_id FROM notifications 
-        WHERE user_id = ? AND sent_date = ?
-    ''', (user_id, today))
-    seen_today = [row[0] for row in cursor.fetchall()]
-    
-    # Если показали все слова, сбрасываем
-    cursor.execute('SELECT COUNT(*) FROM words')
-    total_words = cursor.fetchone()[0]
-    
-    if len(seen_today) >= total_words:
-        cursor.execute('DELETE FROM notifications WHERE user_id = ? AND sent_date = ?', 
-                      (user_id, today))
-        seen_today = []
-    
-    # Получаем случайное слово из непоказанных
-    if seen_today:
-        placeholders = ','.join(['?'] * len(seen_today))
-        cursor.execute(f'''
-            SELECT * FROM words 
-            WHERE id NOT IN ({placeholders})
-            ORDER BY RANDOM() LIMIT 1
-        ''', seen_today)
-    else:
-        cursor.execute('SELECT * FROM words ORDER BY RANDOM() LIMIT 1')
-    
-    word_data = cursor.fetchone()
-    
-    if word_data:
-        word = {
-            'id': word_data[0],
-            'word': word_data[1],
-            'translation': word_data[2],
-            'example': word_data[3],
-            'example_translation': word_data[4],
-            'synonyms': word_data[5],
-            'part_of_speech': word_data[6]
-        }
+    try:
+        today = time.strftime('%Y-%m-%d')
         
-        cursor.execute('''
-            INSERT INTO notifications (user_id, word_id, sent_date)
-            VALUES (?, ?, ?)
-        ''', (user_id, word['id'], today))
-        conn.commit()
-    else:
-        word = None
-    
-    conn.close()
-    return word
+        # Получаем ID слов, показанных сегодня
+        response = supabase.table('notifications').select('word_id').eq('user_id', user_id).eq('sent_date', today).execute()
+        seen_ids = [row['word_id'] for row in response.data]
+        
+        # Получаем общее количество слов
+        total_response = supabase.table('words').select('count', count='exact').execute()
+        total_words = total_response.count
+        
+        # Если показали все слова, очищаем историю
+        if len(seen_ids) >= total_words:
+            supabase.table('notifications').delete().eq('user_id', user_id).eq('sent_date', today).execute()
+            seen_ids = []
+        
+        # Получаем случайное слово из непоказанных
+        query = supabase.table('words').select('*')
+        if seen_ids:
+            query = query.not_.in_('id', seen_ids)
+        response = query.order('random()').limit(1).execute()
+        
+        if response.data:
+            word = response.data[0]
+            # Запоминаем, что показали
+            supabase.table('notifications').insert({
+                'user_id': user_id,
+                'word_id': word['id'],
+                'sent_date': today
+            }).execute()
+            return {
+                'id': word['id'],
+                'word': word['word'],
+                'translation': word['translation'],
+                'example': word['example'],
+                'example_translation': word['example_translation'],
+                'synonyms': word['synonyms'],
+                'part_of_speech': word['part_of_speech']
+            }
+        return None
+    except Exception as e:
+        print(f"Ошибка получения непоказанного слова: {e}")
+        return None
 
 def save_user_word(user_id, word_id, notes=""):
     """Сохраняет слово в список пользователя"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
     try:
-        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', 
-                      (user_id, word_id))
-        existing = cursor.fetchone()
+        # Проверяем, есть ли уже такое слово
+        response = supabase.table('user_words').select('*').eq('user_id', user_id).eq('word_id', word_id).execute()
         
-        if existing:
-            cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
-            count = cursor.fetchone()[0]
-            conn.close()
-            return count
+        if response.data:
+            count_response = supabase.table('user_words').select('count', count='exact').eq('user_id', user_id).execute()
+            return count_response.count
         
-        cursor.execute('''
-            INSERT INTO user_words (user_id, word_id, notes)
-            VALUES (?, ?, ?)
-        ''', (user_id, word_id, notes))
+        # Сохраняем новое слово
+        supabase.table('user_words').insert({
+            'user_id': user_id,
+            'word_id': word_id,
+            'notes': notes
+        }).execute()
         
-        conn.commit()
-        
-        cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
+        count_response = supabase.table('user_words').select('count', count='exact').eq('user_id', user_id).execute()
+        return count_response.count
     except Exception as e:
         print(f"Ошибка сохранения: {e}")
-        conn.close()
         return None
 
 def get_user_words(user_id):
     """Возвращает список сохраненных слов пользователя"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-
-    cursor.execute('SELECT word_id FROM user_words WHERE user_id = ? ORDER BY added_date DESC', (user_id,))
-    word_ids = cursor.fetchall()
-    
-    if not word_ids:
-        conn.close()
+    try:
+        response = supabase.table('user_words').select('word_id').eq('user_id', user_id).order('added_date', desc=True).execute()
+        word_ids = [row['word_id'] for row in response.data]
+        
+        if not word_ids:
+            return []
+        
+        # Получаем полную информацию о словах
+        words = []
+        for word_id in word_ids:
+            word_response = supabase.table('words').select('*').eq('id', word_id).execute()
+            if word_response.data:
+                w = word_response.data[0]
+                words.append({
+                    'id': w['id'],
+                    'word': w['word'],
+                    'translation': w['translation'],
+                    'example': w['example'],
+                    'example_translation': w['example_translation'],
+                    'synonyms': w['synonyms'],
+                    'part_of_speech': w['part_of_speech'],
+                    'notes': ""
+                })
+        return words
+    except Exception as e:
+        print(f"Ошибка получения слов пользователя: {e}")
         return []
-
-    words = []
-    for (word_id,) in word_ids:
-        cursor.execute('SELECT * FROM words WHERE id = ?', (word_id,))
-        word_data = cursor.fetchone()
-        if word_data:
-            words.append({
-                'id': word_data[0],
-                'word': word_data[1],
-                'translation': word_data[2],
-                'example': word_data[3],
-                'example_translation': word_data[4],
-                'synonyms': word_data[5],
-                'part_of_speech': word_data[6],
-                'notes': ""
-            })
-    
-    conn.close()
-    return words
 
 def count_user_words(user_id):
     """Считает количество сохраненных слов у пользователя"""
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    try:
+        response = supabase.table('user_words').select('count', count='exact').eq('user_id', user_id).execute()
+        return response.count
+    except Exception as e:
+        print(f"Ошибка подсчета слов: {e}")
+        return 0
 
 # ----- ОЗВУЧКА ЧЕРЕЗ GTTS -----
 def generate_voice(word):
@@ -1565,11 +1542,12 @@ def handle_text(message):
     word_text = message.text.strip().lower()
 
     # Сначала ищем в базе
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM words WHERE LOWER(word) = ?', (word_text,))
-    word_data = cursor.fetchone()
-    conn.close()
+    try:
+        response = supabase.table('words').select('*').eq('word', word_text).execute()
+        word_data = response.data[0] if response.data else None
+    except Exception as e:
+        print(f"Ошибка поиска: {e}")
+        word_data = None
 
     user_id = get_user_id(message)
     if not user_id:
@@ -1579,20 +1557,18 @@ def handle_text(message):
     # Если слово есть в базе
     if word_data:
         word = {
-            'id': word_data[0],
-            'word': word_data[1],
-            'translation': word_data[2],
-            'example': word_data[3],
-            'example_translation': word_data[4],
-            'synonyms': word_data[5],
-            'part_of_speech': word_data[6]
+            'id': word_data['id'],
+            'word': word_data['word'],
+            'translation': word_data['translation'],
+            'example': word_data['example'],
+            'example_translation': word_data['example_translation'],
+            'synonyms': word_data['synonyms'],
+            'part_of_speech': word_data['part_of_speech']
         }
         
-        conn = sqlite3.connect('words.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM user_words WHERE user_id = ? AND word_id = ?', (user_id, word['id']))
-        is_saved = cursor.fetchone() is not None
-        conn.close()
+        # Проверяем, сохранено ли слово у пользователя
+        saved_response = supabase.table('user_words').select('*').eq('user_id', user_id).eq('word_id', word['id']).execute()
+        is_saved = len(saved_response.data) > 0
         
         card = format_word_card(word, user_id=user_id)
         markup = get_unified_keyboard(
@@ -1609,27 +1585,26 @@ def handle_text(message):
     ai_word = get_word_from_ai(word_text)
     
     if ai_word:
-        # Автоматически сохраняем в общую базу
-        conn = sqlite3.connect('words.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO words 
-            (word, translation, example, example_translation, synonyms, part_of_speech)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            ai_word['word'],
-            ai_word['translation'],
-            ai_word['example'],
-            ai_word['example_translation'],
-            ai_word['synonyms'],
-            ai_word['part_of_speech']
-        ))
-        conn.commit()
-        
-        # Получаем ID слова
-        cursor.execute('SELECT id FROM words WHERE word = ?', (ai_word['word'],))
-        word_id = cursor.fetchone()[0]
-        conn.close()
+        # Сохраняем в базу
+        try:
+            # Проверяем, нет ли уже такого слова
+            existing = supabase.table('words').select('id').eq('word', ai_word['word']).execute()
+            if existing.data:
+                word_id = existing.data[0]['id']
+            else:
+                # Вставляем новое слово
+                insert_response = supabase.table('words').insert({
+                    'word': ai_word['word'],
+                    'translation': ai_word['translation'],
+                    'example': ai_word['example'],
+                    'example_translation': ai_word['example_translation'],
+                    'synonyms': ai_word['synonyms'],
+                    'part_of_speech': ai_word['part_of_speech']
+                }).execute()
+                word_id = insert_response.data[0]['id']
+        except Exception as e:
+            print(f"Ошибка сохранения AI слова: {e}")
+            word_id = None
         
         card = format_word_card(ai_word, user_id=user_id)
         
@@ -1720,6 +1695,11 @@ def run_bot():
 if __name__ == "__main__":
     print("Запускаем приложение...")
     try:
+        # Создаём бота
+        bot = telebot.TeleBot(BOT_TOKEN)
+        bot.timeout = 30
+        
+        # Инициализируем базу данных
         init_database()
         print("✅ База данных готова!")
 
