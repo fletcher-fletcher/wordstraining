@@ -110,6 +110,58 @@ def get_word_from_ai(word):
     except Exception as e:
         print(f"❌ Ошибка GROQ: {e}")
         return None
+
+def get_more_examples(word):
+    """Получает дополнительные примеры использования слова из GROQ AI"""
+    if not GROQ_API_KEY or not groq_client:
+        print("❌ GROQ API ключ не настроен")
+        return None
+    
+    prompt = f"""Ты помогаешь с английскими словами. Предоставь 3 дополнительных примера использования слова "{word}" в разных контекстах.
+Отвечай строго в формате JSON без лишнего текста:
+{{
+    "examples": [
+        {{"example": "пример на английском", "translation": "перевод примера на русский"}},
+        {{"example": "второй пример", "translation": "перевод второго примера"}},
+        {{"example": "третий пример", "translation": "перевод третьего примера"}}
+    ]
+}}
+
+Примеры должны быть разнообразными и показывать разные значения слова (если они есть).
+"""
+    
+    try:
+        print(f"🤖 Запрос дополнительных примеров для слова: {word}")
+        
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
+        
+        content = completion.choices[0].message.content
+        
+        # Извлекаем JSON из ответа
+        content = content.strip()
+        if content.startswith('```json'):
+            content = content[7:]
+        if content.startswith('```'):
+            content = content[3:]
+        if content.endswith('```'):
+            content = content[:-3]
+        content = content.strip()
+        
+        examples_data = json.loads(content)
+        
+        if examples_data.get('examples'):
+            return examples_data['examples']
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка получения примеров: {e}")
+        return None
         
 # СОЗДАЕМ БОТА
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -223,14 +275,14 @@ def get_unseen_word(user_id):
             .eq('sent_date', today)\
             .execute()
         
-        seen_today = [row['word_id'] for row in seen_response.data]
+        seen_today = [row['word_id'] for row in seen_response.data] if seen_response.data else []
         
         # Получаем общее количество слов
         total_response = supabase.table('words').select('count', count='exact').execute()
-        total_words = total_response.count
+        total_words = total_response.count if total_response.count else 0
         
         # Если показали все слова, сбрасываем
-        if len(seen_today) >= total_words:
+        if len(seen_today) >= total_words and total_words > 0:
             supabase.table('notifications')\
                 .delete()\
                 .eq('user_id', user_id)\
@@ -247,8 +299,7 @@ def get_unseen_word(user_id):
                 query = query.neq('id', word_id)
         
         # Получаем количество доступных слов
-        count_response = supabase.table('words').select('count', count='exact').execute()
-        available_count = count_response.count - len(seen_today)
+        available_count = total_words - len(seen_today)
         
         if available_count > 0:
             random_offset = random.randint(0, available_count - 1)
@@ -296,7 +347,7 @@ def save_user_word(user_id, word_id, notes=""):
                 .select('count', count='exact')\
                 .eq('user_id', user_id)\
                 .execute()
-            return count_response.count
+            return count_response.count if count_response.count else 0
         
         # Сохраняем новое слово
         supabase.table('user_words').insert({
@@ -312,7 +363,7 @@ def save_user_word(user_id, word_id, notes=""):
             .eq('user_id', user_id)\
             .execute()
         
-        return count_response.count
+        return count_response.count if count_response.count else 0
     except Exception as e:
         print(f"Ошибка сохранения: {e}")
         return None
@@ -366,7 +417,7 @@ def count_user_words(user_id):
             .eq('user_id', user_id)\
             .execute()
         
-        return response.count
+        return response.count if response.count else 0
     except Exception as e:
         print(f"Ошибка подсчета слов: {e}")
         return 0
@@ -436,19 +487,19 @@ def format_word_card(word, user_id=None):
         "verb": "📙",
         "adverb": "📕"
     }
-    emoji = pos_emoji.get(word['part_of_speech'], "📖")
+    emoji = pos_emoji.get(word.get('part_of_speech', ''), "📖")
 
-    pos = f"{emoji} *{word['part_of_speech'].capitalize()}*" if word['part_of_speech'] else ""
+    pos = f"{emoji} *{word.get('part_of_speech', '').capitalize()}*" if word.get('part_of_speech') else ""
 
-    card = f"📖 *{word['word']}*\n"
+    card = f"📖 *{word.get('word', '')}*\n"
     if pos:
         card += f"{pos}\n"
-    card += f"📝 *Перевод:* {word['translation']}\n\n"
+    card += f"📝 *Перевод:* {word.get('translation', '')}\n\n"
     card += f"📌 *Пример:*\n"
-    card += f"{word['example']}\n"
-    card += f"_{word['example_translation']}_\n\n"
-    if word['synonyms']:
-        card += f"🔗 *Синонимы:* {word['synonyms']}"
+    card += f"{word.get('example', '')}\n"
+    card += f"_{word.get('example_translation', '')}_\n\n"
+    if word.get('synonyms'):
+        card += f"🔗 *Синонимы:* {word.get('synonyms', '')}"
 
     return card
 
@@ -502,15 +553,6 @@ def get_main_menu_keyboard():
     return markup
 
 # ----- ФУНКЦИИ ДЛЯ УВЕДОМЛЕНИЙ -----
-def should_notify_now(user_id, current_time):
-    """Проверяет, нужно ли отправить уведомление сейчас (по точному времени)"""
-    settings = get_user_settings(user_id)
-    
-    if settings and settings.get('notify_time'):
-        times = settings['notify_time'].split(',')
-        return current_time in [t.strip() for t in times]
-    return False
-
 def send_scheduled_words():
     """Отправляет слова всем пользователям с учётом их часового пояса"""
     try:
@@ -520,7 +562,7 @@ def send_scheduled_words():
             .eq('notifications', 1)\
             .execute()
         
-        users = response.data
+        users = response.data if response.data else []
         server_time = datetime.now(pytz.UTC)
         
         for user_data in users:
@@ -591,13 +633,13 @@ def send_exam_question(chat_id, user_id):
             .limit(3)\
             .execute()
         
-        wrong_options = [row['translation'] for row in response.data]
+        wrong_options = [row['translation'] for row in response.data] if response.data else []
         
         # Если не хватает вариантов, добавляем заглушки
         while len(wrong_options) < 3:
             wrong_options.append("???")
         
-        options = [word['translation']] + wrong_options
+        options = [word['translation']] + wrong_options[:3]
         random.shuffle(options)
         
         question = f"❓ *Вопрос {session['current'] + 1}/{session['total']}*\n\n"
@@ -656,29 +698,6 @@ def finish_exam(chat_id, user_id):
     if f"exam_{user_id}" in user_states:
         del user_states[f"exam_{user_id}"]
 
-# ----- ОБРАБОТЧИКИ КОМАНД -----
-
-@bot.message_handler(commands=['test_ai'])
-def test_ai_command(message):
-    """Тест API GROQ"""
-    status_msg = bot.reply_to(message, "🔍 Тестирую подключение к GROQ...")
-    
-    test_word = "hello"
-    result = get_word_from_ai(test_word)
-    
-    if result:
-        bot.edit_message_text(
-            f"✅ AI работает!\n\nСлово: {result['word']}\nПеревод: {result['translation']}",
-            message.chat.id,
-            status_msg.message_id
-        )
-    else:
-        bot.edit_message_text(
-            "❌ AI не отвечает. Проверь API ключ.",
-            message.chat.id,
-            status_msg.message_id
-        )
-        
 def show_notify_settings(chat_id, user_id, edit_message_id=None):
     """Показывает настройки уведомлений"""
     settings = get_user_settings(user_id)
@@ -722,6 +741,157 @@ def show_notify_settings(chat_id, user_id, edit_message_id=None):
             bot.send_message(chat_id, status_text, parse_mode='Markdown', reply_markup=markup)
     else:
         bot.send_message(chat_id, status_text, parse_mode='Markdown', reply_markup=markup)
+
+def show_main_menu(chat_id, text="🏠 *Главное меню*"):
+    markup = get_main_menu_keyboard()
+    bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
+
+def show_words_list(chat_id, user_id, edit_message_id=None):
+    """Отображает список сохраненных слов"""
+    words = get_user_words(user_id)
+
+    if not words:
+        text = "📭 У тебя пока нет сохраненных слов. Используй /random и сохраняй интересные!"
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+        
+        if edit_message_id:
+            bot.edit_message_text(text, chat_id, edit_message_id, parse_mode='Markdown', reply_markup=markup)
+        else:
+            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
+        return
+
+    text = "📚 *Твои сохраненные слова:*\n\n"
+    for i, w in enumerate(words, 1):
+        pos_symbol = "📘" if w['part_of_speech'] == "adjective" else "📗" if w['part_of_speech'] == "noun" else "📙"
+        text += f"{i}. {pos_symbol} *{w['word']}* — {w['translation']}\n"
+
+    text += f"\n📊 Всего: *{len(words)}* слов"
+
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+
+    if edit_message_id:
+        bot.edit_message_text(text, chat_id, edit_message_id, parse_mode='Markdown', reply_markup=markup)
+    else:
+        bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
+
+def send_random_word(chat_id, user_id):
+    word = get_random_word()
+    if word:
+        # Проверяем, сохранено ли слово
+        existing = supabase.table('user_words')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .eq('word_id', word['id'])\
+            .execute()
+        
+        is_saved = len(existing.data) > 0 if existing.data else False
+        
+        card = format_word_card(word, user_id=user_id)
+        markup = get_unified_keyboard(
+            word_id=word['id'],
+            mode="random",
+            is_saved=is_saved
+        )
+        
+        bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
+    else:
+        bot.send_message(chat_id, "😕 Что-то пошло не так. Попробуй позже.")
+
+def start_practice_session(user_id, mode, chat_id):
+    """Начинает сессию тренировки"""
+    user_states[user_id] = {"mode": mode, "in_session": True, "last_word_id": None}
+
+    if mode == "practice_all":
+        word = get_random_word()
+    else:
+        user_words = get_user_words(user_id)
+        if not user_words:
+            bot.send_message(chat_id, "📭 У тебя пока нет слов для тренировки. Сохрани слова через /random")
+            return
+        
+        if len(user_words) == 1 and user_states.get(user_id, {}).get("last_word_id") == user_words[0]['id']:
+            markup = telebot.types.InlineKeyboardMarkup()
+            markup.add(
+                telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="random"),
+                telebot.types.InlineKeyboardButton("🔄 Ещё раз", callback_data="practice_mode_mylist"),
+                telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+            )
+            bot.send_message(chat_id, "📭 *Ты повторил все слова!*", parse_mode='Markdown', reply_markup=markup)
+            return
+            
+        word = random.choice(user_words)
+        
+        last_id = user_states.get(user_id, {}).get("last_word_id")
+        if last_id and word['id'] == last_id and len(user_words) > 1:
+            other_words = [w for w in user_words if w['id'] != last_id]
+            word = random.choice(other_words)
+
+    if not word:
+        bot.send_message(chat_id, "😕 Не могу найти слово для тренировки. Попробуй позже.")
+        return
+
+    user_states[user_id]["last_word_id"] = word['id']
+
+    try:
+        # Получаем случайные варианты ответов
+        response = supabase.table('words')\
+            .select('translation')\
+            .neq('id', word['id'])\
+            .limit(3)\
+            .execute()
+        
+        wrong_options = [row['translation'] for row in response.data] if response.data else []
+        
+        # Если не хватает вариантов, добавляем заглушки
+        while len(wrong_options) < 3:
+            wrong_options.append("???")
+        
+        options = [word['translation']] + wrong_options[:3]
+        random.shuffle(options)
+
+        mode_text = "из твоего списка" if mode == "practice_mylist" else "из словаря"
+        question = f"❓ *Как переводится слово ({mode_text}):*\n*{word['word']}*"
+
+        markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+
+        for opt in options:
+            btn = telebot.types.InlineKeyboardButton(f"🔸 {opt}", callback_data=f"practice_answer_{word['id']}_{opt == word['translation']}")
+            markup.add(btn)
+
+        markup.add(
+            telebot.types.InlineKeyboardButton("👀 Показать ответ", callback_data=f"practice_show_{word['id']}"),
+            telebot.types.InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_{word['id']}"),
+            telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+        )
+
+        bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
+    except Exception as e:
+        print(f"Ошибка в start_practice_session: {e}")
+
+# ----- ОБРАБОТЧИКИ КОМАНД -----
+
+@bot.message_handler(commands=['test_ai'])
+def test_ai_command(message):
+    """Тест API GROQ"""
+    status_msg = bot.reply_to(message, "🔍 Тестирую подключение к GROQ...")
+    
+    test_word = "hello"
+    result = get_word_from_ai(test_word)
+    
+    if result:
+        bot.edit_message_text(
+            f"✅ AI работает!\n\nСлово: {result['word']}\nПеревод: {result['translation']}",
+            message.chat.id,
+            status_msg.message_id
+        )
+    else:
+        bot.edit_message_text(
+            "❌ AI не отвечает. Проверь API ключ.",
+            message.chat.id,
+            status_msg.message_id
+        )
 
 @bot.message_handler(commands=['timezone'])
 def timezone_command(message):
@@ -773,10 +943,6 @@ def menu_command(message):
     """Показать главное меню"""
     show_main_menu(message.chat.id)
 
-def show_main_menu(chat_id, text="🏠 *Главное меню*"):
-    markup = get_main_menu_keyboard()
-    bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
-
 @bot.message_handler(commands=['random'])
 def random_word_command(message):
     user_id = get_user_id(message)
@@ -787,29 +953,6 @@ def random_word_command(message):
     user_states[user_id] = {"mode": "random"}
     send_random_word(message.chat.id, user_id)
 
-def send_random_word(chat_id, user_id):
-    word = get_random_word()
-    if word:
-        # Проверяем, сохранено ли слово
-        existing = supabase.table('user_words')\
-            .select('*')\
-            .eq('user_id', user_id)\
-            .eq('word_id', word['id'])\
-            .execute()
-        
-        is_saved = len(existing.data) > 0
-        
-        card = format_word_card(word, user_id=user_id)
-        markup = get_unified_keyboard(
-            word_id=word['id'],
-            mode="random",
-            is_saved=is_saved
-        )
-        
-        bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
-    else:
-        bot.send_message(chat_id, "😕 Что-то пошло не так. Попробуй позже.")
-
 @bot.message_handler(commands=['mylist'])
 def mylist_command(message):
     """Показать список сохраненных слов"""
@@ -819,36 +962,6 @@ def mylist_command(message):
         return
         
     show_words_list(chat_id=message.chat.id, user_id=user_id)
-
-def show_words_list(chat_id, user_id, edit_message_id=None):
-    """Отображает список сохраненных слов"""
-    words = get_user_words(user_id)
-
-    if not words:
-        text = "📭 У тебя пока нет сохраненных слов. Используй /random и сохраняй интересные!"
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
-        
-        if edit_message_id:
-            bot.edit_message_text(text, chat_id, edit_message_id, parse_mode='Markdown', reply_markup=markup)
-        else:
-            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
-        return
-
-    text = "📚 *Твои сохраненные слова:*\n\n"
-    for i, w in enumerate(words, 1):
-        pos_symbol = "📘" if w['part_of_speech'] == "adjective" else "📗" if w['part_of_speech'] == "noun" else "📙"
-        text += f"{i}. {pos_symbol} *{w['word']}* — {w['translation']}\n"
-
-    text += f"\n📊 Всего: *{len(words)}* слов"
-
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
-
-    if edit_message_id:
-        bot.edit_message_text(text, chat_id, edit_message_id, parse_mode='Markdown', reply_markup=markup)
-    else:
-        bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
 
 @bot.message_handler(commands=['practice'])
 def practice_choice(message):
@@ -904,7 +1017,8 @@ def exam_command(message):
         'correct': 0,
         'wrong': 0,
         'answers': [],
-        'start_time': time.time()
+        'start_time': time.time(),
+        'total': min(10, len(saved_words))
     }
     
     random.shuffle(exam_session['words'])
@@ -927,77 +1041,6 @@ def exam_command(message):
         parse_mode='Markdown',
         reply_markup=markup
     )
-
-def start_practice_session(user_id, mode, chat_id):
-    """Начинает сессию тренировки"""
-    user_states[user_id] = {"mode": mode, "in_session": True, "last_word_id": None}
-
-    if mode == "practice_all":
-        word = get_random_word()
-    else:
-        user_words = get_user_words(user_id)
-        if not user_words:
-            bot.send_message(chat_id, "📭 У тебя пока нет слов для тренировки. Сохрани слова через /random")
-            return
-        
-        if len(user_words) == 1 and user_states.get(user_id, {}).get("last_word_id") == user_words[0]['id']:
-            markup = telebot.types.InlineKeyboardMarkup()
-            markup.add(
-                telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="random"),
-                telebot.types.InlineKeyboardButton("🔄 Ещё раз", callback_data="practice_mode_mylist"),
-                telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-            )
-            bot.send_message(chat_id, "📭 *Ты повторил все слова!*", parse_mode='Markdown', reply_markup=markup)
-            return
-            
-        word = random.choice(user_words)
-        
-        last_id = user_states.get(user_id, {}).get("last_word_id")
-        if last_id and word['id'] == last_id and len(user_words) > 1:
-            other_words = [w for w in user_words if w['id'] != last_id]
-            word = random.choice(other_words)
-
-    if not word:
-        bot.send_message(chat_id, "😕 Не могу найти слово для тренировки. Попробуй позже.")
-        return
-
-    user_states[user_id]["last_word_id"] = word['id']
-
-    try:
-        # Получаем случайные варианты ответов
-        response = supabase.table('words')\
-            .select('translation')\
-            .neq('id', word['id'])\
-            .limit(3)\
-            .execute()
-        
-        wrong_options = [row['translation'] for row in response.data]
-        
-        # Если не хватает вариантов, добавляем заглушки
-        while len(wrong_options) < 3:
-            wrong_options.append("???")
-        
-        options = [word['translation']] + wrong_options
-        random.shuffle(options)
-
-        mode_text = "из твоего списка" if mode == "practice_mylist" else "из словаря"
-        question = f"❓ *Как переводится слово ({mode_text}):*\n*{word['word']}*"
-
-        markup = telebot.types.InlineKeyboardMarkup(row_width=1)
-
-        for opt in options:
-            btn = telebot.types.InlineKeyboardButton(f"🔸 {opt}", callback_data=f"practice_answer_{word['id']}_{opt == word['translation']}")
-            markup.add(btn)
-
-        markup.add(
-            telebot.types.InlineKeyboardButton("👀 Показать ответ", callback_data=f"practice_show_{word['id']}"),
-            telebot.types.InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_{word['id']}"),
-            telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
-        )
-
-        bot.send_message(chat_id, question, parse_mode='Markdown', reply_markup=markup)
-    except Exception as e:
-        print(f"Ошибка в start_practice_session: {e}")
 
 @bot.message_handler(func=lambda message: message.text and user_states.get(f"notify_time_{get_user_id(message)}", {}).get("step") == "waiting")
 def handle_time_input(message):
@@ -1456,12 +1499,12 @@ def handle_callback(call):
                 .limit(3)\
                 .execute()
             
-            wrong_options = [row['translation'] for row in response.data]
+            wrong_options = [row['translation'] for row in response.data] if response.data else []
             
             while len(wrong_options) < 3:
                 wrong_options.append("???")
             
-            options = [word['translation']] + wrong_options
+            options = [word['translation']] + wrong_options[:3]
             random.shuffle(options)
             
             mode_text = "из твоего списка" if mode == "practice_mylist" else "из словаря"
@@ -1533,7 +1576,7 @@ def handle_callback(call):
                 .eq('word_id', word_id)\
                 .execute()
             
-            is_saved = len(existing.data) > 0
+            is_saved = len(existing.data) > 0 if existing.data else False
             
             card = format_word_card(word, user_id=user_id)
             markup = get_unified_keyboard(
@@ -1575,7 +1618,7 @@ def handle_callback(call):
                 .eq('word_id', word_id)\
                 .execute()
             
-            is_saved = len(existing.data) > 0
+            is_saved = len(existing.data) > 0 if existing.data else False
             
             card = format_word_card(word, user_id=user_id)
             markup = get_unified_keyboard(
@@ -1588,6 +1631,86 @@ def handle_callback(call):
                 bot.edit_message_text(f"👀 *Правильный ответ:*\n\n{card}", chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
             except:
                 bot.send_message(chat_id, f"👀 *Правильный ответ:*\n\n{card}", parse_mode='Markdown', reply_markup=markup)
+        return
+
+    # ===== ДОПОЛНИТЕЛЬНЫЕ ПРИМЕРЫ =====
+    if call.data.startswith("more_examples_"):
+        word_id = int(call.data.split("_")[2])
+        
+        # Получаем слово из базы
+        word_response = supabase.table('words')\
+            .select('word')\
+            .eq('id', word_id)\
+            .execute()
+        
+        if not word_response.data:
+            bot.answer_callback_query(call.id, "❌ Слово не найдено")
+            return
+        
+        word_text = word_response.data[0]['word']
+        
+        bot.answer_callback_query(call.id, "📝 Ищу дополнительные примеры...")
+        
+        # Получаем примеры от AI
+        examples = get_more_examples(word_text)
+        
+        if examples:
+            # Форматируем ответ
+            response_text = f"📚 *Дополнительные примеры для слова '{word_text}':*\n\n"
+            for i, ex in enumerate(examples, 1):
+                response_text += f"{i}. *{ex['example']}*\n"
+                response_text += f"   _{ex['translation']}_\n\n"
+            
+            # Добавляем кнопку закрытия
+            markup = telebot.types.InlineKeyboardMarkup()
+            markup.add(telebot.types.InlineKeyboardButton("🔙 Назад к слову", callback_data=f"back_to_word_{word_id}"))
+            markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+            
+            bot.send_message(chat_id, response_text, parse_mode='Markdown', reply_markup=markup)
+        else:
+            bot.send_message(chat_id, f"😕 Не удалось найти дополнительные примеры для слова '{word_text}'. Попробуй позже.")
+        return
+
+    # ===== ВОЗВРАТ К СЛОВУ =====
+    if call.data.startswith("back_to_word_"):
+        word_id = int(call.data.split("_")[3])
+        
+        word_response = supabase.table('words').select('*').eq('id', word_id).execute()
+        
+        if word_response.data:
+            word_data = word_response.data[0]
+            word = {
+                'id': word_data['id'],
+                'word': word_data['word'],
+                'translation': word_data['translation'],
+                'example': word_data['example'],
+                'example_translation': word_data['example_translation'],
+                'synonyms': word_data['synonyms'],
+                'part_of_speech': word_data['part_of_speech']
+            }
+            
+            # Проверяем, сохранено ли слово
+            existing = supabase.table('user_words')\
+                .select('*')\
+                .eq('user_id', user_id)\
+                .eq('word_id', word_id)\
+                .execute()
+            
+            is_saved = len(existing.data) > 0 if existing.data else False
+            
+            card = format_word_card(word, user_id=user_id)
+            markup = get_unified_keyboard(
+                word_id=word_id,
+                mode="random",
+                is_saved=is_saved
+            )
+            
+            try:
+                bot.delete_message(chat_id, message_id)
+            except:
+                pass
+            
+            bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
         return
 
 # ----- ОБРАБОТЧИК ТЕКСТА (ПОИСК СЛОВ С AI) -----
@@ -1629,7 +1752,7 @@ def handle_text(message):
             .eq('word_id', word['id'])\
             .execute()
         
-        is_saved = len(existing.data) > 0
+        is_saved = len(existing.data) > 0 if existing.data else False
         
         card = format_word_card(word, user_id=user_id)
         markup = get_unified_keyboard(
@@ -1646,26 +1769,30 @@ def handle_text(message):
     ai_word = get_word_from_ai(word_text)
     
     if ai_word:
-        # Автоматически сохраняем в общую базу
-        word_response = supabase.table('words').insert({
-            'word': ai_word['word'],
-            'translation': ai_word['translation'],
-            'example': ai_word['example'],
-            'example_translation': ai_word['example_translation'],
-            'synonyms': ai_word['synonyms'],
-            'part_of_speech': ai_word['part_of_speech']
-        }).execute()
+        # Проверяем, не существует ли уже такое слово в базе
+        check_existing = supabase.table('words')\
+            .select('id')\
+            .eq('word', ai_word['word'])\
+            .execute()
         
-        # Получаем ID слова
-        if word_response.data:
-            word_id = word_response.data[0]['id']
+        if check_existing.data:
+            word_id = check_existing.data[0]['id']
         else:
-            # Если не удалось получить ID, ищем слово
-            find_response = supabase.table('words')\
-                .select('id')\
-                .eq('word', ai_word['word'])\
-                .execute()
-            word_id = find_response.data[0]['id'] if find_response.data else None
+            # Автоматически сохраняем в общую базу
+            word_response = supabase.table('words').insert({
+                'word': ai_word['word'],
+                'translation': ai_word['translation'],
+                'example': ai_word['example'],
+                'example_translation': ai_word['example_translation'],
+                'synonyms': ai_word['synonyms'],
+                'part_of_speech': ai_word['part_of_speech']
+            }).execute()
+            
+            # Получаем ID слова
+            if word_response.data:
+                word_id = word_response.data[0]['id']
+            else:
+                word_id = None
         
         card = format_word_card(ai_word, user_id=user_id)
         
@@ -1674,6 +1801,11 @@ def handle_text(message):
             mode="search",
             is_saved=False
         )
+        
+        # Добавляем кнопку для дополнительных примеров
+        if word_id:
+            more_examples_btn = telebot.types.InlineKeyboardButton("📚 Больше примеров", callback_data=f"more_examples_{word_id}")
+            markup.add(more_examples_btn)
         
         bot.edit_message_text(
             card, 
@@ -1721,7 +1853,7 @@ if __name__ == "__main__":
 
         port = int(os.environ.get('PORT', 10000))
         print(f"🚀 Запускаем Flask на порту {port}...")
-        app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
     except Exception as e:
         print(f"❌ Критическая ошибка: {e}")
