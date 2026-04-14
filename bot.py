@@ -504,6 +504,8 @@ def format_word_card(word, user_id=None):
     return card
 
 # ----- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ КЛАВИАТУР -----
+# Замените функцию get_unified_keyboard на эту:
+
 def get_unified_keyboard(word_id=None, mode="random", is_saved=False):
     """
     Создает унифицированную клавиатуру для всех случаев.
@@ -523,6 +525,8 @@ def get_unified_keyboard(word_id=None, mode="random", is_saved=False):
     
     if word_id:
         buttons.append(telebot.types.InlineKeyboardButton("🔊 Слушать", callback_data=f"voice_{word_id}"))
+        # Добавляем кнопку "Больше примеров" для всех слов
+        buttons.append(telebot.types.InlineKeyboardButton("📚 Больше примеров", callback_data=f"more_examples_{word_id}"))
     
     if mode == "random":
         buttons.append(telebot.types.InlineKeyboardButton("🎲 Еще слово", callback_data="random"))
@@ -532,6 +536,7 @@ def get_unified_keyboard(word_id=None, mode="random", is_saved=False):
     buttons.append(telebot.types.InlineKeyboardButton("📚 Мои слова", callback_data="show_mylist"))
     buttons.append(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
     
+    # Распределяем кнопки по рядам (по 2 в ряд)
     for i in range(0, len(buttons), 2):
         if i + 1 < len(buttons):
             markup.add(buttons[i], buttons[i+1])
@@ -1633,6 +1638,8 @@ def handle_callback(call):
                 bot.send_message(chat_id, f"👀 *Правильный ответ:*\n\n{card}", parse_mode='Markdown', reply_markup=markup)
         return
 
+# Добавьте этот блок в функцию handle_callback (после обработки practice_show_)
+
     # ===== ДОПОЛНИТЕЛЬНЫЕ ПРИМЕРЫ =====
     if call.data.startswith("more_examples_"):
         word_id = int(call.data.split("_")[2])
@@ -1651,8 +1658,17 @@ def handle_callback(call):
         
         bot.answer_callback_query(call.id, "📝 Ищу дополнительные примеры...")
         
+        # Отправляем сообщение о загрузке
+        loading_msg = bot.send_message(chat_id, "🔍 Запрашиваю примеры у ИИ... Подождите несколько секунд.")
+        
         # Получаем примеры от AI
         examples = get_more_examples(word_text)
+        
+        # Удаляем сообщение о загрузке
+        try:
+            bot.delete_message(chat_id, loading_msg.message_id)
+        except:
+            pass
         
         if examples:
             # Форматируем ответ
@@ -1661,14 +1677,69 @@ def handle_callback(call):
                 response_text += f"{i}. *{ex['example']}*\n"
                 response_text += f"   _{ex['translation']}_\n\n"
             
-            # Добавляем кнопку закрытия
-            markup = telebot.types.InlineKeyboardMarkup()
-            markup.add(telebot.types.InlineKeyboardButton("🔙 Назад к слову", callback_data=f"back_to_word_{word_id}"))
-            markup.add(telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home"))
+            # Добавляем кнопки
+            markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                telebot.types.InlineKeyboardButton("🔙 Назад к слову", callback_data=f"back_to_word_{word_id}"),
+                telebot.types.InlineKeyboardButton("🎲 Случайное слово", callback_data="random"),
+                telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+            )
             
             bot.send_message(chat_id, response_text, parse_mode='Markdown', reply_markup=markup)
         else:
-            bot.send_message(chat_id, f"😕 Не удалось найти дополнительные примеры для слова '{word_text}'. Попробуй позже.")
+            # Если не удалось получить примеры
+            markup = telebot.types.InlineKeyboardMarkup()
+            markup.add(
+                telebot.types.InlineKeyboardButton("🔙 Назад к слову", callback_data=f"back_to_word_{word_id}"),
+                telebot.types.InlineKeyboardButton("🏠 Меню", callback_data="go_home")
+            )
+            bot.send_message(chat_id, f"😕 Не удалось найти дополнительные примеры для слова '{word_text}'. Попробуй позже или проверь подключение к интернету.", reply_markup=markup)
+        return
+
+    # ===== ВОЗВРАТ К СЛОВУ =====
+    if call.data.startswith("back_to_word_"):
+        word_id = int(call.data.split("_")[3])
+        
+        word_response = supabase.table('words').select('*').eq('id', word_id).execute()
+        
+        if word_response.data:
+            word_data = word_response.data[0]
+            word = {
+                'id': word_data['id'],
+                'word': word_data['word'],
+                'translation': word_data['translation'],
+                'example': word_data['example'],
+                'example_translation': word_data['example_translation'],
+                'synonyms': word_data['synonyms'],
+                'part_of_speech': word_data['part_of_speech']
+            }
+            
+            # Проверяем, сохранено ли слово
+            existing = supabase.table('user_words')\
+                .select('*')\
+                .eq('user_id', user_id)\
+                .eq('word_id', word_id)\
+                .execute()
+            
+            is_saved = len(existing.data) > 0 if existing.data else False
+            
+            card = format_word_card(word, user_id=user_id)
+            markup = get_unified_keyboard(
+                word_id=word_id,
+                mode="random",
+                is_saved=is_saved
+            )
+            
+            try:
+                # Пытаемся отредактировать существующее сообщение
+                bot.edit_message_text(card, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+            except:
+                # Если не получилось, отправляем новое
+                try:
+                    bot.delete_message(chat_id, message_id)
+                except:
+                    pass
+                bot.send_message(chat_id, card, parse_mode='Markdown', reply_markup=markup)
         return
 
     # ===== ВОЗВРАТ К СЛОВУ =====
